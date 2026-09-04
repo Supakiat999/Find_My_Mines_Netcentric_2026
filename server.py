@@ -86,6 +86,23 @@ class Server:
         self.listener.listen(8)
         self.listener.settimeout(0.5)     # so the accept loop can be stopped
         self.lan_ip = protocol.local_ip()
+        self._ip_checked_at = 0.0
+
+    def current_ip(self):
+        """Our LAN address, re-checked as we go.
+
+        DHCP hands out a new address when the network changes - switching
+        Wi-Fi, or a hotspot restarting.  Showing the address we had at
+        start-up would send players to somewhere that no longer exists.
+        """
+        now = time.time()
+        if now - self._ip_checked_at > 3:
+            self._ip_checked_at = now
+            fresh = protocol.local_ip()
+            if fresh != self.lan_ip:
+                self.lan_ip = fresh
+                self.say("Address changed - players must now use %s" % fresh)
+        return self.lan_ip
 
     # ------------------------------------------------------------------
     # logging
@@ -484,9 +501,9 @@ class ServerUI:
         self.screen.fill(BG)
 
         self.text("FIND MY MINES", (32, 20), self.f_title)
-        self.text("server console   %s:%d   (LAN %s)"
-                  % (config.BIND_HOST, config.SERVER_PORT, srv.lan_ip),
-                  (34, 56), self.f_small, MUTED)
+        width = self.text("players connect to", (34, 60), self.f_small, MUTED)
+        self.text("%s:%d" % (srv.current_ip(), config.SERVER_PORT),
+                  (34 + width + 10, 54), self.f_head, ACCENT)
         self._draw_reset_button()
 
         self._draw_clients(pygame.Rect(32, 92, 400, 300))
