@@ -120,7 +120,7 @@ class NetworkClient:
 
 
 class ClientUI:
-    def __init__(self):
+    def __init__(self, cli_host=None, cli_port=None):
         pygame.init()
         pygame.display.set_caption("Find My Mines")
         self.screen = pygame.display.set_mode((WIN_W, WIN_H))
@@ -133,17 +133,25 @@ class ClientUI:
         self.f_cell = self._font(30, bold=True)
         self.f_huge = self._font(52, bold=True)
 
-        self.net = NetworkClient()
+        self.net = NetworkClient(host=cli_host, port=cli_port)
         self.net.connect_async()
 
-        # LAN auto-discovery runs in the background; a manual address
-        # (CLI arg or non-default SERVER_HOST) always wins - discovered
-        # servers are only offered, never auto-joined.
+        # LAN auto-discovery runs in the background; an explicit CLI
+        # address always wins - discovered servers are offered first,
+        # auto-joined only when the user gave no address at all.
         self.servers = []          # list of (host, port) from UDP beacons
         self.scanning = True
-        self.manual_target = (
-            self.net.host != "127.0.0.1" or self.net.port != 55555)
+        self.cli_override = cli_host is not None or cli_port is not None
+        self.manual_target = self.cli_override  # compat alias
+        self._auto_targeted = False
+        self._user_picked = False
         threading.Thread(target=self._scan_for_servers, daemon=True).start()
+
+        # Editable lobby target (nickname/error screens only - never in
+        # gameplay).  Prefilled from the effective address; Tab focuses it,
+        # Enter dials it.  The config.py default stays the source of truth.
+        self.editing_target = False
+        self.target_text = self.net.address
 
         self.screen_name = SCREEN_NICKNAME
         self.nickname = ""
@@ -201,6 +209,31 @@ class ClientUI:
             self.servers = []
         finally:
             self.scanning = False
+        self._maybe_auto_target()
+
+    def _maybe_auto_target(self):
+        """Dial the most-seen beacon when the user gave no address.
+
+        Only fires while still on the pre-join lobby, only once, and never
+        after the user picked a server or typed a target - an explicit
+        choice always wins over discovery.
+        """
+        if (self.cli_override or self._auto_targeted or self._user_picked
+                or not self.servers):
+            return
+        if self.screen_name not in (SCREEN_NICKNAME, SCREEN_ERROR):
+            return
+        if self.net.status not in ("connecting", "failed", "lost"):
+            return
+        if (self.net.host, self.net.port) in self.servers:
+            return
+        host, port = self.servers[0]
+        self._auto_targeted = True
+        self.net.retarget(host, port)
+        self.target_text = "%s:%d" % (host, port)
+        if self.screen_name == SCREEN_ERROR:
+            self.screen_name = SCREEN_NICKNAME
+        self.say("Found server at %s:%d - joining ..." % (host, port))
 
     def _rescan(self):
         if self.scanning:
@@ -211,15 +244,55 @@ class ClientUI:
     def _use_server(self, index):
         if 0 <= index < len(self.servers):
             host, port = self.servers[index]
+            self._user_picked = True
+            self.editing_target = False
             self.net.retarget(host, port)
+            self.target_text = "%s:%d" % (host, port)
             self.screen_name = SCREEN_NICKNAME
             self.say("Joining %s:%d ..." % (host, port))
+
+    @staticmethod
+    def _parse_target(text):
+        """Parse 'host' or 'host:port' from the lobby target field."""
+        text = (text or "").strip()
+        if not text or any(ch.isspace() for ch in text):
+            return None
+        if text.count(":") > 1:
+            return None
+        host, _, port_s = text.partition(":")
+        if not host:
+            return None
+        if not port_s:
+            return host, None
+        if not port_s.isdigit():
+            return None
+        port = int(port_s)
+        if not (1 <= port <= 65535):
+            return None
+        return host, port
+
+    def _dial_target_text(self):
+        parsed = self._parse_target(self.target_text)
+        if parsed is None:
+            self.say("Use host or host:port, e.g. 172.20.10.2:55557")
+            return
+        host, port = parsed
+        self._user_picked = True
+        self.editing_target = False
+        self.net.retarget(host, port if port is not None else config.SERVER_PORT)
+        self.target_text = self.net.address
+        self.screen_name = SCREEN_NICKNAME
+        self.say("Joining %s ..." % self.net.address)
 
     # ------------------------------------------------------------------
     # incoming messages
     # ------------------------------------------------------------------
     def pump_network(self):
-        if self.net.status in ("failed", "lost") and self.screen_name != SCREEN_ERROR:
+        # Only yank mid-game sessions to the error screen.  On the lobby
+        # (nickname) a failed dial stays inline with retry/picker options -
+        # otherwise the discovery list is unreachable in the failure race.
+        if (self.net.status in ("failed", "lost")
+                and self.screen_name == SCREEN_GAME):
             self.screen_name = SCREEN_ERROR
         while True:
             try:
@@ -321,18 +394,57 @@ class ClientUI:
         elif self.screen_name == SCREEN_GAME:
             self._on_game_event(event)
         elif self.screen_name == SCREEN_ERROR:
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+            if event.type != pygame.KEYDOWN:
+                return
+            if event.key == pygame.K_r:
                 self.net.connect_async()
+                self.target_text = self.net.address
                 self._rescan()
                 self.screen_name = SCREEN_NICKNAME
+            elif event.key == pygame.K_F5:
+                self._rescan()
+            elif event.key == pygame.K_ESCAPE:
+                self.screen_name = SCREEN_NICKNAME
+            elif event.key == pygame.K_RETURN and self.editing_target:
+                self._dial_target_text()
+            elif event.key == pygame.K_TAB:
+                self.editing_target = not self.editing_target
+            elif pygame.K_1 <= event.key <= pygame.K_9 and not self.editing_target:
+                self._use_server(event.key - pygame.K_1)
+            elif self.editing_target:
+                self._edit_target_text(event)
+
+    def _edit_target_text(self, event):
+        if event.key == pygame.K_BACKSPACE:
+            self.target_text = self.target_text[:-1]
+        elif event.key == pygame.K_ESCAPE:
+            self.editing_target = False
+        elif (event.unicode and event.unicode.isprintable()
+                and len(self.target_text) < 64
+                and (event.unicode.isalnum() or event.unicode in ".:-")):
+            self.target_text += event.unicode
 
     def _on_nickname_event(self, event):
         if event.type != pygame.KEYDOWN:
             return
+        if event.key == pygame.K_TAB:
+            self.editing_target = not self.editing_target
+            return
+        if self.editing_target:
+            if event.key == pygame.K_RETURN:
+                self._dial_target_text()
+            elif event.key == pygame.K_F5:
+                self._rescan()
+            else:
+                self._edit_target_text(event)
+            return
         if event.key == pygame.K_RETURN:
             if self.nickname.strip() and self.net.status == "connected":
                 self.net.send(protocol.JOIN, nickname=self.nickname.strip())
+            elif self.net.status != "connected":
+                self.say("Not connected yet - pick a server below or press R")
         elif event.key == pygame.K_r and self.net.status in ("failed", "lost"):
+            self.target_text = self.net.address
             self.net.connect_async()
             self._rescan()
         elif event.key == pygame.K_F5:
@@ -398,19 +510,34 @@ class ClientUI:
         if self.net.status == "connected":
             self.text("Press ENTER to join", (WIN_W // 2, 386), self.f_body,
                       GOOD, center=True)
-        else:
-            self.text("Connecting to the server...", (WIN_W // 2, 386),
+        elif self.net.status == "connecting":
+            self.text("Trying %s ..." % self.net.address, (WIN_W // 2, 386),
                       self.f_body, WARN, center=True)
+        elif self.net.status == "failed":
+            self.text("Could not reach %s" % self.net.address,
+                      (WIN_W // 2, 386), self.f_body, BAD, center=True)
+            self.text("Pick a server below, edit the target, or press R",
+                      (WIN_W // 2, 410), self.f_small, MUTED, center=True)
+        else:
+            self.text("Connection to %s lost - press R" % self.net.address,
+                      (WIN_W // 2, 386), self.f_body, BAD, center=True)
 
-        # proof for the demo that the address comes from the source, not the user
-        self.text("server %s  (config.py default; override: python client.py <ip>)" % self.net.address,
-                  (WIN_W // 2, 440), self.f_small, MUTED, center=True)
+        # Lobby target field (pre-join only): default comes from config.py /
+        # CLI args, edits stay in memory.  Nothing like this exists in-game.
+        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+        target_line = "Target [%s%s]  (Tab to edit, Enter to connect)" % (
+            self.target_text, caret if self.editing_target else "")
+        self.text(target_line, (WIN_W // 2, 440), self.f_small,
+                  ACCENT if self.editing_target else MUTED, center=True)
 
-        y = 478
+        self._draw_server_list(478)
+
+    def _draw_server_list(self, y):
         if self.scanning:
             self.text("Searching the local network for servers...",
                       (WIN_W // 2, y), self.f_small, WARN, center=True)
-        elif self.servers:
+            return y + 26
+        if self.servers:
             self.text("Servers found on this network - press a number:",
                       (WIN_W // 2, y), self.f_small, GOOD, center=True)
             for i, (host, port) in enumerate(self.servers[:9]):
@@ -421,33 +548,40 @@ class ClientUI:
             self.text("F5 to scan again",
                       (WIN_W // 2, y + 26 + len(self.servers[:9]) * 24 + 8),
                       self.f_small, MUTED, center=True)
-        elif not self.manual_target:
-            self.text("No servers found yet - F5 to scan again, or run",
-                      (WIN_W // 2, y), self.f_small, MUTED, center=True)
-            self.text("python client.py <server-ip>  (see the server window)",
-                      (WIN_W // 2, y + 24), self.f_small, MUTED, center=True)
+            return y + 26 + len(self.servers[:9]) * 24 + 34
+        self.text("No servers found - F5 to scan, type a target above, or run",
+                  (WIN_W // 2, y), self.f_small, MUTED, center=True)
+        self.text("python client.py <server-ip> [port]  (see the server window)",
+                  (WIN_W // 2, y + 24), self.f_small, MUTED, center=True)
+        return y + 50
 
     def _draw_error(self):
-        self.text("CANNOT REACH THE SERVER", (WIN_W // 2, 240), self.f_head,
+        self.text("CANNOT REACH THE SERVER", (WIN_W // 2, 150), self.f_head,
                   BAD, center=True)
         if self.net.status == "lost":
             detail = "The connection to %s was closed." % self.net.address
         else:
             detail = "Tried %s - %s" % (self.net.address, self.net.error)
-        self.text(detail, (WIN_W // 2, 292), self.f_body, TEXT, center=True)
+        self.text(detail, (WIN_W // 2, 190), self.f_body, TEXT, center=True)
 
         hints = [
             "Is server.py running on that computer?",
-            "Is SERVER_HOST in config.py the server's current IP?",
+            "Did the server move to a new IP/port? (check its window header)",
             "Is Python allowed through the firewall on the server?",
             "Are both computers on the same Wi-Fi? (a phone hotspot works)",
         ]
-        y = 350
+        y = 228
         for hint in hints:
             self.text("- " + hint, (WIN_W // 2 - 240, y), self.f_small, MUTED)
-            y += 30
-        self.text("Press R to try again", (WIN_W // 2, y + 24), self.f_body,
-                  ACCENT, center=True)
+            y += 26
+        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+        self.text("Target [%s%s]  (Tab to edit, Enter to connect)" % (
+            self.target_text, caret if self.editing_target else ""),
+            (WIN_W // 2, y + 8), self.f_small,
+            ACCENT if self.editing_target else MUTED, center=True)
+        end_y = self._draw_server_list(y + 38)
+        self.text("1-9 join a server - F5 rescan - R retry - Esc back",
+                  (WIN_W // 2, end_y + 6), self.f_body, ACCENT, center=True)
 
     def _draw_game(self):
         self.text("FIND MY MINES", (WIN_W // 2, 26), self.f_title, TEXT, center=True)
@@ -631,17 +765,17 @@ class ClientUI:
 def main():
     """Start the client.
 
-    The address normally comes from config.py, so nobody has to type one.
-    An optional argument overrides it - handy when the server has moved to
-    a new address and editing the file would be one more thing to get
-    wrong:  python client.py 192.168.1.14
+    The default address comes from config.py, so nobody has to type one.
+    Optional arguments override it in memory (no file edit, nothing typed
+    in-game):  python client.py 192.168.1.14 [port].  The lobby also offers
+    discovered servers and an editable target field before joining.
     """
     args = [a for a in sys.argv[1:] if a.strip()]
-    if args:
-        config.SERVER_HOST = args[0].strip()
+    cli_host = args[0].strip() if args else None
+    cli_port = None
     if len(args) > 1 and args[1].strip().isdigit():
-        config.SERVER_PORT = int(args[1])
-    ClientUI().run()
+        cli_port = int(args[1])
+    ClientUI(cli_host=cli_host, cli_port=cli_port).run()
 
 
 if __name__ == "__main__":
