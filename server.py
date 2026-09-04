@@ -87,6 +87,7 @@ class Server:
         self.listener.settimeout(0.5)     # so the accept loop can be stopped
         self.lan_ip = protocol.local_ip()
         self._ip_checked_at = 0.0
+        self._offline = False
 
     def current_ip(self):
         """Our LAN address, re-checked as we go.
@@ -99,9 +100,18 @@ class Server:
         if now - self._ip_checked_at > 3:
             self._ip_checked_at = now
             fresh = protocol.local_ip()
-            if fresh != self.lan_ip:
-                self.lan_ip = fresh
-                self.say("Address changed - players must now use %s" % fresh)
+            if fresh == "127.0.0.1" and self.lan_ip != "127.0.0.1":
+                # No route at all - the Wi-Fi dropped.  Keep showing the
+                # last good address instead of sending players to loopback.
+                if not self._offline:
+                    self._offline = True
+                    self.say("Network unreachable - still showing %s"
+                             % self.lan_ip)
+            else:
+                self._offline = False
+                if fresh != self.lan_ip:
+                    self.lan_ip = fresh
+                    self.say("Address changed - players must now use %s" % fresh)
         return self.lan_ip
 
     # ------------------------------------------------------------------
