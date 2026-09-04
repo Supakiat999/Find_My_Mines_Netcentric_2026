@@ -54,8 +54,11 @@ class ClientRecord:
         self.addr = addr
         self.name = None          # set on JOIN
         self.role = "connecting"  # connecting | player | spectator
-        self.joined_at = time.time()
-        self.alive = True
+        self.connected_at = time.time()
+        self.joined_at = None     # set on JOIN - seats follow this, not the
+        self.alive = True         # connection order, so a client sitting on
+                                  # the nickname screen cannot take a seat
+                                  # from someone already playing
 
     @property
     def label(self):
@@ -138,10 +141,13 @@ class Server:
 
     def _ordered_clients(self):
         with self.clients_lock:
-            return sorted(self.clients.values(), key=lambda c: c.joined_at)
+            return sorted(self.clients.values(), key=lambda c: c.connected_at)
 
     def _joined_clients(self):
-        return [c for c in self._ordered_clients() if c.name]
+        """Everyone who has sent a nickname, in the order they sent it."""
+        with self.clients_lock:
+            named = [c for c in self.clients.values() if c.name]
+        return sorted(named, key=lambda c: c.joined_at)
 
     def _client(self, client_id):
         with self.clients_lock:
@@ -320,6 +326,7 @@ class Server:
             return  # already joined
         wanted = str(msg.get("nickname", "")).strip()[:16] or "Player"
         rec.name = self._unique_name(wanted)
+        rec.joined_at = time.time()
         self._reseat()
         self._send(rec, protocol.WELCOME,
                    client_id=rec.id, role=rec.role,

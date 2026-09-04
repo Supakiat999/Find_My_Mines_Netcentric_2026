@@ -16,9 +16,12 @@ per bomb; the match ends when all 11 are found.
 
 | Part | State |
 |---|---|
-| `config.py` · `protocol.py` · `game.py` · `server.py` | Done — verified by a headless socket test |
-| `client.py` | Not built yet |
+| Server — `config.py` · `protocol.py` · `game.py` · `server.py` | Done, verified by a headless socket test |
+| Client — `client.py` | Done, verified by two clients playing a full match |
 | Extra features | Not started |
+
+Step-by-step setup, including the two-computer demo, is in
+**[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
 
 ---
 
@@ -30,7 +33,9 @@ per bomb; the match ends when all 11 are found.
 | `protocol.py` | Newline-delimited JSON framing over TCP, plus a reader that reassembles messages split across packets. |
 | `game.py` | Pure game rules — bomb placement, neighbour counts, turn order, scoring. No sockets, no GUI. |
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
+| `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
 | `ARCHITECTURE.md` | How the system works layer by layer, from Wi-Fi frames up to the game rules — written for presenting in class. |
+| `HOW_TO_RUN.md` | Setup and troubleshooting, including what to send the other players. |
 
 ---
 
