@@ -25,6 +25,7 @@ from collections import deque
 import pygame
 
 import config
+import discovery
 import game as game_rules
 import protocol
 
@@ -87,6 +88,8 @@ class Server:
         self.listener.settimeout(0.5)     # so the accept loop can be stopped
         self.lan_ip = protocol.local_ip()
         self._ip_checked_at = 0.0
+        self._beacon_stop = None
+        self._beacon_thread = None
 
     def current_ip(self):
         """Our LAN address, re-checked as we go.
@@ -119,6 +122,20 @@ class Server:
         threading.Thread(target=self._accept_loop, daemon=True).start()
         self.say("Listening on %s:%d  (LAN %s)"
                  % (config.BIND_HOST, config.SERVER_PORT, self.lan_ip))
+        others = [ip for ip in protocol.local_ips() if ip != self.lan_ip]
+        if others:
+            self.say("Other addresses on this machine: %s" % ", ".join(others))
+            self.say("If one network fails, try the other address.")
+        self.say("Clients: run  python client.py %s  "
+                 "or wait for auto-discovery (UDP %d)"
+                 % (self.lan_ip, config.DISCOVERY_PORT))
+        self._beacon_stop = threading.Event()
+        self._beacon_thread = threading.Thread(
+            target=discovery.run_beacon,
+            args=(self._beacon_stop, self.current_ip,
+                  lambda: config.SERVER_PORT),
+            daemon=True)
+        self._beacon_thread.start()
 
     def _accept_loop(self):
         while self.running:
@@ -155,9 +172,18 @@ class Server:
         JOIN is left untouched in the buffer for the reader below.
         """
         try:
+            sock.settimeout(0.5)
             head = sock.recv(8, socket.MSG_PEEK)
         except OSError:
+            try:
+                sock.settimeout(None)
+            except OSError:
+                pass
             return False
+        try:
+            sock.settimeout(None)
+        except OSError:
+            pass
         if not (head.startswith(b"GET") or head.startswith(b"HEAD")):
             return False
 
@@ -480,6 +506,8 @@ class Server:
 
     def shutdown(self):
         self.running = False
+        if self._beacon_stop is not None:
+            self._beacon_stop.set()
         for rec in self._ordered_clients():
             try:
                 rec.sock.close()
@@ -691,6 +719,15 @@ class ServerUI:
 
 
 def main():
+    """Start the server.
+
+    Optional argument overrides the port (must match the clients):
+    python server.py [port].  The address is always BIND_HOST (0.0.0.0)
+    so every interface - Wi-Fi, hotspot, Ethernet - accepts players.
+    """
+    args = [a for a in sys.argv[1:] if a.strip()]
+    if args and args[0].strip().isdigit():
+        config.SERVER_PORT = int(args[0].strip())
     try:
         server = Server()
     except OSError as exc:

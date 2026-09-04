@@ -29,7 +29,7 @@ Step-by-step setup, including the two-computer demo, is in
 
 | File | Purpose |
 |---|---|
-| `config.py` | Server address, port, and game constants. The **only** file you edit to connect a second computer. |
+| `config.py` | Server address, port, discovery + game constants. Defaults only — CLI args override without editing. |
 | `protocol.py` | Newline-delimited JSON framing over TCP, plus a reader that reassembles messages split across packets. |
 | `game.py` | Pure game rules — bomb placement, neighbour counts, turn order, scoring. No sockets, no GUI. |
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
@@ -75,42 +75,64 @@ python client.py
    python server.py
    ```
 
-   The top of the window shows its address, e.g. `(LAN 192.168.1.14)`. You can
-   also find it with `ipconfig` — use the **IPv4 Address** of your Wi-Fi adapter.
+   The top of the window shows its address, e.g. `192.168.1.14:55555`.
+   If several addresses are listed in the log, try each one. Find it
+   manually with `ipconfig` (Windows), `ipconfig getifaddr en0` (macOS),
+   or `ip addr show` (Linux) — use the **IPv4 address** of Wi-Fi/hotspot.
 
-2. Allow Python through the firewall. Windows shows a prompt on first run — tick
-   **Private networks** → *Allow*. If you missed it, run in an **Administrator**
-   PowerShell:
+2. Allow Python through the firewall (TCP 55555 in, UDP 55556 in for
+   auto-discovery):
+   - Windows: tick **Private networks** → *Allow* on first run, else in an
+     **Administrator** PowerShell:
 
-   ```powershell
-   netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow protocol=TCP localport=55555
-   ```
+     ```powershell
+     netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow protocol=TCP localport=55555
+     netsh advfirewall firewall add rule name="FindMyMines-Discovery" dir=in action=allow protocol=UDP localport=55556
+     ```
+
+   - macOS: System Settings → Network → Firewall → allow Python / pygame.
+   - Linux: `sudo ufw allow 55555/tcp && sudo ufw allow 55556/udp`
 
 **On the client computer:**
 
-3. Edit one line in `config.py`:
-
-   ```python
-   SERVER_HOST = "192.168.1.14"   # the server computer's IPv4 address
-   ```
-
-4. Start the client:
+3. Start the client — it scans the LAN and lists servers on the nickname
+   screen (press `1`-`9` to join, `F5` to scan again):
 
    ```bash
    python client.py
    ```
 
-Per the assignment, players never type an IP or port in the game itself — the
-address lives in the source.
+   No server listed (e.g. isolated university Wi-Fi)? Connect directly:
+
+   ```bash
+   python client.py 192.168.1.14
+   ```
+
+   ...or edit one line in `config.py`:
+
+   ```python
+   SERVER_HOST = "192.168.1.14"   # the server computer's IPv4 address
+   ```
+
+Per the assignment, players never type an IP or port in the game itself —
+the default address lives in the source; the CLI arg and the discovery
+picker only override it in memory for cross-machine play.
 
 **Troubleshooting**
 
 - Both computers must be on the **same network**. University Wi-Fi often blocks
   device-to-device traffic; if the connection fails, share a **phone hotspot**
-  and connect both laptops to it.
-- Check reachability first: `ping 192.168.1.14`
-- The computer running the server can also run a client, with
-  `SERVER_HOST = "127.0.0.1"`.
+  and connect both laptops to it. Disable VPNs on both machines.
+- Check reachability first: open `http://<server-ip>:55555` in a browser —
+  you should see “Connection works”. If that fails, fix network/firewall
+  before starting the game. `ping <server-ip>` is only a hint (ICMP is often
+  blocked even when the game port is open).
+- Prefer `Test-NetConnection <ip> -Port 55555` (Windows) or
+  `nc -vz <ip> 55555` (macOS/Linux) over ping.
+- The computer running the server can also run a client: leave
+  `SERVER_HOST = "127.0.0.1"` or run `python client.py 127.0.0.1`.
+- The server IP changes when you switch networks — always re-read it from
+  the server window header on the day.
 
 ---
 

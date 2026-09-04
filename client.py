@@ -22,6 +22,7 @@ import threading
 import pygame
 
 import config
+import discovery
 import game as game_rules
 import protocol
 
@@ -63,25 +64,38 @@ GAP = 8
 class NetworkClient:
     """One TCP connection to the server, read on its own thread."""
 
-    def __init__(self):
+    def __init__(self, host=None, port=None):
         self.inbox = queue.Queue()
         self.sock = None
         self.status = "connecting"   # connecting | connected | failed | lost
         self.error = ""
+        # Explicit target wins over config.py so auto-discovery and the
+        # CLI override never have to rewrite the source file.
+        self.host = host if host is not None else config.SERVER_HOST
+        self.port = port if port is not None else config.SERVER_PORT
 
     @property
     def address(self):
-        return "%s:%d" % (config.SERVER_HOST, config.SERVER_PORT)
+        return "%s:%d" % (self.host, self.port)
 
     def connect_async(self):
         self.status = "connecting"
         self.error = ""
         threading.Thread(target=self._run, daemon=True).start()
 
+    def retarget(self, host, port=None):
+        """Point at a discovered server and reconnect."""
+        self.close()
+        self.inbox = queue.Queue()
+        self.host = host
+        if port is not None:
+            self.port = port
+        self.connect_async()
+
     def _run(self):
         try:
             self.sock = socket.create_connection(
-                (config.SERVER_HOST, config.SERVER_PORT), timeout=5)
+                (self.host, self.port), timeout=5)
             self.sock.settimeout(None)          # back to blocking for recv
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError as exc:
@@ -121,6 +135,15 @@ class ClientUI:
 
         self.net = NetworkClient()
         self.net.connect_async()
+
+        # LAN auto-discovery runs in the background; a manual address
+        # (CLI arg or non-default SERVER_HOST) always wins - discovered
+        # servers are only offered, never auto-joined.
+        self.servers = []          # list of (host, port) from UDP beacons
+        self.scanning = True
+        self.manual_target = (
+            self.net.host != "127.0.0.1" or self.net.port != 55555)
+        threading.Thread(target=self._scan_for_servers, daemon=True).start()
 
         self.screen_name = SCREEN_NICKNAME
         self.nickname = ""
@@ -169,6 +192,28 @@ class ClientUI:
     def say(self, message, seconds=2.5):
         self.toast = message
         self.toast_until = pygame.time.get_ticks() + int(seconds * 1000)
+
+    def _scan_for_servers(self):
+        """Background UDP listen; rescan whenever asked via _rescan()."""
+        try:
+            self.servers = discovery.listen()
+        except Exception:
+            self.servers = []
+        finally:
+            self.scanning = False
+
+    def _rescan(self):
+        if self.scanning:
+            return
+        self.scanning = True
+        threading.Thread(target=self._scan_for_servers, daemon=True).start()
+
+    def _use_server(self, index):
+        if 0 <= index < len(self.servers):
+            host, port = self.servers[index]
+            self.net.retarget(host, port)
+            self.screen_name = SCREEN_NICKNAME
+            self.say("Joining %s:%d ..." % (host, port))
 
     # ------------------------------------------------------------------
     # incoming messages
@@ -277,8 +322,8 @@ class ClientUI:
             self._on_game_event(event)
         elif self.screen_name == SCREEN_ERROR:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                self.net = NetworkClient()
                 self.net.connect_async()
+                self._rescan()
                 self.screen_name = SCREEN_NICKNAME
 
     def _on_nickname_event(self, event):
@@ -287,6 +332,13 @@ class ClientUI:
         if event.key == pygame.K_RETURN:
             if self.nickname.strip() and self.net.status == "connected":
                 self.net.send(protocol.JOIN, nickname=self.nickname.strip())
+        elif event.key == pygame.K_r and self.net.status in ("failed", "lost"):
+            self.net.connect_async()
+            self._rescan()
+        elif event.key == pygame.K_F5:
+            self._rescan()
+        elif pygame.K_1 <= event.key <= pygame.K_9:
+            self._use_server(event.key - pygame.K_1)
         elif event.key == pygame.K_BACKSPACE:
             self.nickname = self.nickname[:-1]
         elif event.key == pygame.K_ESCAPE:
@@ -351,8 +403,29 @@ class ClientUI:
                       self.f_body, WARN, center=True)
 
         # proof for the demo that the address comes from the source, not the user
-        self.text("server %s  (set in config.py)" % self.net.address,
+        self.text("server %s  (config.py default; override: python client.py <ip>)" % self.net.address,
                   (WIN_W // 2, 440), self.f_small, MUTED, center=True)
+
+        y = 478
+        if self.scanning:
+            self.text("Searching the local network for servers...",
+                      (WIN_W // 2, y), self.f_small, WARN, center=True)
+        elif self.servers:
+            self.text("Servers found on this network - press a number:",
+                      (WIN_W // 2, y), self.f_small, GOOD, center=True)
+            for i, (host, port) in enumerate(self.servers[:9]):
+                mark = "  <-- current" if ("%s:%d" % (host, port)) == self.net.address else ""
+                self.text("%d. %s:%d%s" % (i + 1, host, port, mark),
+                          (WIN_W // 2, y + 26 + i * 24), self.f_body,
+                          ACCENT, center=True)
+            self.text("F5 to scan again",
+                      (WIN_W // 2, y + 26 + len(self.servers[:9]) * 24 + 8),
+                      self.f_small, MUTED, center=True)
+        elif not self.manual_target:
+            self.text("No servers found yet - F5 to scan again, or run",
+                      (WIN_W // 2, y), self.f_small, MUTED, center=True)
+            self.text("python client.py <server-ip>  (see the server window)",
+                      (WIN_W // 2, y + 24), self.f_small, MUTED, center=True)
 
     def _draw_error(self):
         self.text("CANNOT REACH THE SERVER", (WIN_W // 2, 240), self.f_head,
