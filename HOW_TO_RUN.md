@@ -10,10 +10,11 @@ two-computer setup the assignment asks for.
 On **every** computer that will run the game:
 
 ```bash
-pip install pygame
+pip install -r requirements.txt
 ```
 
-Python 3.8 or newer. Check with `python --version`.
+That installs pygame, the only dependency. Python 3.8 or newer — check with
+`python --version`.
 
 ---
 
@@ -99,7 +100,7 @@ the other runs only a client.
 
 ## What to send your friends
 
-> 1. Install Python 3, then run `pip install pygame`
+> 1. Install Python 3, then run `pip install -r requirements.txt`
 > 2. Download the code: https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026
 > 3. Open `config.py` and set `SERVER_HOST = "<my IP>"`
 > 4. Run `python client.py`, type a nickname, press Enter

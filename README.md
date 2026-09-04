@@ -34,6 +34,7 @@ Step-by-step setup, including the two-computer demo, is in
 | `game.py` | Pure game rules — bomb placement, neighbour counts, turn order, scoring. No sockets, no GUI. |
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
 | `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
+| `requirements.txt` | The one dependency, pygame. |
 | `ARCHITECTURE.md` | How the system works layer by layer, from Wi-Fi frames up to the game rules — written for presenting in class. |
 | `HOW_TO_RUN.md` | Setup and troubleshooting, including what to send the other players. |
 
@@ -41,11 +42,12 @@ Step-by-step setup, including the two-computer demo, is in
 
 ## Requirements
 
-```bash
-pip install pygame
-```
+Python 3.8+ (developed on 3.13). The only third-party package is pygame —
+everything else (`socket`, `threading`, `json`, `queue`) ships with Python:
 
-Python 3.8+ (developed on 3.13, pygame 2.6.1).
+```bash
+pip install -r requirements.txt
+```
 
 ---
 

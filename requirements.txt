@@ -1,0 +1,4 @@
+# Find My Mines - install with:  pip install -r requirements.txt
+# Everything else (socket, threading, json, queue) is in the Python standard
+# library, so pygame is the only third-party package.
+pygame>=2.0
