@@ -25,6 +25,39 @@ Step-by-step setup, including the two-computer demo, is in
 
 ---
 
+## Versions
+
+Two branches, both playable. The game is identical in each - same rules, same
+screens, same wire protocol - so a client from one branch talks happily to a
+server from the other. They differ only in how you *find and reach* the server.
+
+| Branch | Tag | What it is |
+|---|---|---|
+| **`main`** | `v1-demo` | The version demonstrated in class. The game and nothing else. |
+| **`enhanced`** | `v2-enhanced` | The same game plus four connection aids (below). |
+
+What `enhanced` adds, all of it about getting connected:
+
+1. The server **re-checks its own IP** every few seconds and shows it in the
+   header, so it never advertises an address it has stopped using.
+2. If the network drops, it **keeps showing the last good address** instead of
+   falling back to `127.0.0.1`.
+3. It **answers a browser** at `http://<server address>:55555` with a
+   "Connection works" page - a five-second way to prove the network is fine
+   before anyone edits a file. It takes no player seat and cannot disturb a
+   match in progress.
+4. The client accepts the address as an argument: **`python client.py <ip>`**,
+   so nobody has to edit `config.py`. The default still comes from the source.
+
+Switching between them:
+
+```bash
+git checkout enhanced
+git checkout main
+```
+
+---
+
 ## Files
 
 | File | Purpose |
