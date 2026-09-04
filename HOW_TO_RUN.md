@@ -53,45 +53,61 @@ as soon as the second player joins.
 python server.py
 ```
 
-The window header shows it, like `(LAN 192.168.1.14)`. You can also run:
+The window header shows it, like `192.168.1.14:55555`. If the log lists
+“Other addresses on this machine”, those are the other NICs (VPN,
+Ethernet) — try each one. You can also run:
 
-```bash
-ipconfig
-```
-
-and read the **IPv4 Address** under your Wi-Fi adapter.
+- Windows: `ipconfig` → **IPv4 Address** under Wi-Fi
+- macOS: `ipconfig getifaddr en0`
+- Linux: `ip addr show` → `inet` under Wi-Fi/hotspot
 
 > Your IP is handed out by the router and **changes** when you switch networks
 > or reconnect. Always re-check it on the day, do not reuse an old one.
 
 ### Step 2 — On the server computer, open the firewall
 
-Windows shows a prompt the first time you run the server — tick **Private
-networks** and click **Allow**. If you missed it, open PowerShell **as
-Administrator** and run:
+Allow **TCP 55555** (game) and **UDP 55556** (auto-discovery):
 
-```bash
+- Windows: tick **Private networks** → *Allow* on first run. If you missed
+  it, open PowerShell **as Administrator**:
+
+```powershell
 netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow protocol=TCP localport=55555
+netsh advfirewall firewall add rule name="FindMyMines-Discovery" dir=in action=allow protocol=UDP localport=55556
 ```
+
+- macOS: System Settings → Network → Firewall → allow incoming for Python.
+- Linux: `sudo ufw allow 55555/tcp && sudo ufw allow 55556/udp`
 
 Without this, other computers cannot reach the server even on the same Wi-Fi.
 
-### Step 3 — On the other computer, point the client at the server
+### Step 3 — On the other computer, find and join the server
 
-Either edit `config.py`:
+Just start the client — it listens ~3s for the server beacon and lists
+what it heard on the nickname screen:
+
+```bash
+python client.py
+```
+
+Press `1`-`9` to join a listed server, `F5` to scan again, `R` to retry the
+TCP connection if the server started late.
+
+No server listed (isolated Wi-Fi) or want to skip the scan? Connect
+directly — this overrides `config.py` without editing any file:
+
+```bash
+python client.py 192.168.1.14
+python client.py 192.168.1.14 55555
+```
+
+Fallback: edit `config.py`:
 
 ```python
 SERVER_HOST = "192.168.1.14"
 ```
 
-...or skip the file entirely and pass the address when you start the client:
-
-```bash
-python client.py 192.168.1.14
-```
-
-Both do the same thing. The argument is the safer one when the server has
-just moved to a new address, because there is no file to forget to save.
+The direct address always wins over discovery.
 
 ### Step 4 — Play
 
@@ -109,32 +125,43 @@ the other runs only a client.
 
 > 1. Install Python 3, then run `pip install -r requirements.txt`
 > 2. Download the code: https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026
-> 3. Run `python client.py <my IP>` — type a nickname, press Enter
->    (or set `SERVER_HOST` in `config.py` and just run `python client.py`)
-> 5. You must be on the same Wi-Fi as me. If it will not connect, join my phone
->    hotspot and I will send the new IP.
+> 3. Run `python client.py` and pick my server from the list (press `1`)
+>    — or run `python client.py <my IP>` if nothing is listed
+> 5. You must be on the same Wi-Fi as me (disable VPN). If it will not
+>    connect, join my phone hotspot and I will send the new IP.
+
+---
+
+## Phone-hotspot runbook (reliable demo)
+
+1. Host starts the hotspot; **both** laptops join it (server last, so its
+   IP is fresh). Disable VPNs on both machines.
+2. On the server: `python server.py`, read the header IP (often
+   `172.20.10.x`), keep the window visible.
+3. On each client: `python client.py`, wait ~3s, press the server number —
+   or `python client.py <server-ip>` as fallback.
+4. If the browser test below fails from the client machine, re-check the
+   IP and the firewall before touching the game.
 
 ---
 
 ## First: the 10-second connection test
 
 Before anyone edits a file, open a **browser** on the other laptop (or on your
-phone) and go to the server's address:
+phone) and go to the server's address — use the IP from the **server window
+header**, e.g.:
 
 ```
-http://172.20.10.2:55555
+http://192.168.1.14:55555
 ```
 
 - **You see "Connection works"** — the network and the firewall are fine. Any
-  remaining problem is the address in that person's `config.py`.
+  remaining problem is the address the client is dialing.
 - **It times out or refuses** — nothing is reaching the server. Fix that first;
   the game cannot work until this page loads.
 
 The page also prints the visitor's own address, which is a quick way to confirm
 they are really on the same network as you.
-
-Use the address shown in the **server window header** — it updates by itself if
-the network hands out a new one.
 
 ---
 
@@ -144,17 +171,21 @@ The client shows what it tried and why. Work down this list:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| "Cannot reach the server" straight away | Server not running, or wrong IP | Start `server.py`; re-check the IP in its window header |
-| It hangs, then fails | Firewall is dropping the connection | Run the `netsh` rule from step 2 on the **server** computer |
-| Works on your own machine, not from theirs | `SERVER_HOST` is still `127.0.0.1` on their copy | Set it to the server's LAN IP on **their** computer |
-| Correct IP, still nothing | The Wi-Fi blocks device-to-device traffic | Use a **phone hotspot** and connect both laptops to it |
-| Worked yesterday, not today | The router gave the server a new IP | Re-read the IP and update `config.py` |
+| "Cannot reach the server" straight away | Server not running, or wrong IP | Start `server.py`; re-check the IP in its window header; try `python client.py <ip>` |
+| No servers listed on the nickname screen | UDP beacon blocked (isolated Wi-Fi) or firewall | Use the direct `python client.py <ip>` path; open UDP 55556 inbound on the server |
+| It hangs, then fails | Firewall is dropping the connection | Open TCP 55555 inbound on the **server** computer (see step 2) |
+| Works on your own machine, not from theirs | Dialing `127.0.0.1` from their copy | Pick the discovered server (press `1`) or pass the server's LAN IP |
+| Correct IP, still nothing | The Wi-Fi blocks device-to-device traffic | Use a **phone hotspot** and connect both laptops to it; disable VPNs |
+| Worked yesterday, not today | The router gave the server a new IP | Re-read the IP and reconnect (no file edit needed with the CLI arg) |
 
-Quick test from the other computer — if this fails, it is the network, not the
-game:
+Better than ping — ping uses ICMP, which is often blocked even when the
+game port is open:
 
 ```bash
-ping 192.168.1.14
+# Windows
+Test-NetConnection 192.168.1.14 -Port 55555
+# macOS / Linux
+nc -vz 192.168.1.14 55555
 ```
 
 University and dorm Wi-Fi very often isolate clients from each other. A phone

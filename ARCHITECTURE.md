@@ -58,8 +58,9 @@ goes. On a hotspot both machines get private addresses like `192.168.1.14` and
 
 ```python
 # config.py
-SERVER_HOST = "192.168.1.14"   # which machine the client dials
+SERVER_HOST = "192.168.1.14"   # default the client dials (CLI arg overrides)
 BIND_HOST   = "0.0.0.0"        # which interfaces the server listens on
+DISCOVERY_PORT = 55556         # UDP beacon: server shouts, clients listen
 ```
 
 Two ideas worth explaining on a slide:
@@ -80,7 +81,16 @@ return s.getsockname()[0]      # it just asks the routing table
 
 `connect()` on a UDP socket transmits nothing — it only makes the kernel pick the
 route it *would* use, which reveals which local IP faces the network. That is why
-the server window can print its own LAN address for you.
+the server window can print its own LAN address for you. `local_ips()` extends
+this by also listing every hostname-resolved IPv4, so VPNs, Ethernet+Wi-Fi, and
+offline hotspots show all candidates instead of one possibly-wrong pick.
+
+**Discovery (new):** every second the server UDP-broadcasts
+`{"magic","host","port"}` on `DISCOVERY_PORT` (`discovery.py`); clients
+`listen()` ~3s on the nickname screen and offer `1`-`9` to join. Broadcasts
+do not cross subnets and die under AP client isolation — the manual
+`python client.py <ip>` path is the fallback, and the in-game address still
+defaults from `config.py`.
 
 **The assignment requirement lands here:** players never type an IP or port. The
 address is a constant in the source, resolved before any socket is opened.

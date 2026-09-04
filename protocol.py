@@ -71,11 +71,43 @@ class MessageReader:
 
 def local_ip():
     """Best-effort LAN IP of this machine, for display on the server UI."""
+    ips = local_ips()
+    return ips[0] if ips else "127.0.0.1"
+
+
+def local_ips():
+    """All non-loopback IPv4 addresses, best effort, de-duplicated.
+
+    local_ip() above picks the internet-route address, which can be wrong
+    when a VPN is up, when Ethernet+Wi-Fi are both connected, or when a
+    phone hotspot has no mobile data (no 8.8.8.8 route).  Listing every
+    candidate lets the server show the full set so players can try each.
+    """
+    found = []
+
+    def _add(ip):
+        if ip and not ip.startswith("127.") and ip not in found:
+            try:
+                socket.inet_aton(ip)
+            except OSError:
+                return
+            found.append(ip)
+
+    # 1. The classic routing-table trick (sends no packets).
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))  # no packets sent; just picks a route
-        return s.getsockname()[0]
+        s.connect(("8.8.8.8", 80))
+        _add(s.getsockname()[0])
     except OSError:
-        return "127.0.0.1"
+        pass
     finally:
         s.close()
+    # 2. Whatever the hostname resolves to (covers hotspot-offline cases
+    # where step 1 fails or returns the wrong interface).
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None,
+                                       socket.AF_INET, socket.SOCK_DGRAM):
+            _add(info[4][0])
+    except OSError:
+        pass
+    return found
