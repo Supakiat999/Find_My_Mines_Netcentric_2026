@@ -109,6 +109,28 @@ the other runs only a client.
 
 ---
 
+## First: the 10-second connection test
+
+Before anyone edits a file, open a **browser** on the other laptop (or on your
+phone) and go to the server's address:
+
+```
+http://172.20.10.2:55555
+```
+
+- **You see "Connection works"** — the network and the firewall are fine. Any
+  remaining problem is the address in that person's `config.py`.
+- **It times out or refuses** — nothing is reaching the server. Fix that first;
+  the game cannot work until this page loads.
+
+The page also prints the visitor's own address, which is a quick way to confirm
+they are really on the same network as you.
+
+Use the address shown in the **server window header** — it updates by itself if
+the network hands out a new one.
+
+---
+
 ## If it will not connect
 
 The client shows what it tried and why. Work down this list:
