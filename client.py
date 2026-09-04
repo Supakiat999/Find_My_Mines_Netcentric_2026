@@ -25,7 +25,7 @@ import config
 import game as game_rules
 import protocol
 
-WIN_W, WIN_H = 860, 860
+WIN_W, WIN_H = 860, 880
 FPS = 30
 
 # palette - matches the server console
@@ -137,7 +137,20 @@ class ClientUI:
         self.running = True
 
         self.welcome_dims = None      # board shape, until the first state
+        self.mode_rects = self._mode_rects()
         self.rematch_rect = pygame.Rect(WIN_W // 2 - 100, WIN_H // 2 + 66, 200, 52)
+
+    @staticmethod
+    def _mode_rects():
+        """A button per mode, centred under the title."""
+        width, gap = 116, 8
+        total = len(game_rules.MODES) * width + (len(game_rules.MODES) - 1) * gap
+        x = (WIN_W - total) // 2
+        rects = []
+        for mode in game_rules.MODES:
+            rects.append((mode, pygame.Rect(x, 58, width, 30)))
+            x += width + gap
+        return rects
 
     @staticmethod
     def _font(size, bold=False):
@@ -285,10 +298,10 @@ class ClientUI:
             size, gap, layer_gap = 42, 6, 18
             layer_w = cols * (size + gap) - gap
             total = layers * layer_w + (layers - 1) * layer_gap
-            return size, gap, layer_gap, (WIN_W - total) // 2, 300, layer_w
+            return size, gap, layer_gap, (WIN_W - total) // 2, 320, layer_w
         rows, cols = self.dims
         total = cols * (CELL + GAP) - GAP
-        return CELL, GAP, 0, (WIN_W - total) // 2, 232, total
+        return CELL, GAP, 0, (WIN_W - total) // 2, 252, total
 
     def cell_rect(self, cell):
         size, gap, layer_gap, ox, oy, layer_w = self._geometry()
@@ -376,6 +389,15 @@ class ClientUI:
                     self.net.send(protocol.REMATCH)
                     self.voted_rematch = True
             return
+        if event.button == 1:
+            for mode, box in self.mode_rects:
+                if box.collidepoint(event.pos):
+                    if self.role != "player":
+                        self.say("Only players can change the mode")
+                    elif mode != self.mode:
+                        self.net.send(protocol.SET_MODE, mode=mode)
+                    return
+
         hit = self.cell_at(event.pos)
         if hit is None:
             return
@@ -460,10 +482,7 @@ class ClientUI:
 
     def _draw_game(self):
         self.text("FIND MY MINES", (WIN_W // 2, 22), self.f_title, TEXT, center=True)
-        label = (self.state or {}).get("mode_label")
-        if label:
-            self.text(label.upper(), (WIN_W // 2, 66), self.f_small,
-                      ACCENT, center=True)
+        self._draw_modes()
         self._draw_clock()
         self._draw_scoreboard()
         self._draw_board()
@@ -472,11 +491,27 @@ class ClientUI:
         if self.match_end is not None:
             self._draw_end_overlay()
 
+    def _draw_modes(self):
+        """The mode bar - this is where the extra games are found."""
+        mouse = pygame.mouse.get_pos()
+        for mode, box in self.mode_rects:
+            active = mode == self.mode
+            hot = box.collidepoint(mouse) and self.role == "player"
+            fill = (37, 99, 235) if active else (PANEL_2 if hot else PANEL)
+            pygame.draw.rect(self.screen, fill, box, border_radius=8)
+            pygame.draw.rect(self.screen, ACCENT if active else LINE, box,
+                             width=1, border_radius=8)
+            self.text(game_rules.MODE_LABELS.get(mode, mode), box.center,
+                      self.f_small, (235, 244, 255) if active else MUTED,
+                      center=True)
+        blurb = game_rules.MODE_BLURBS.get(self.mode, "")
+        self.text(blurb, (WIN_W // 2, 100), self.f_small, MUTED, center=True)
+
     def _draw_clock(self):
         running = self.phase == game_rules.PHASE_PLAYING
         left = self.seconds_left if running else 0
         colour = MUTED if not running else (BAD if left <= 3 else ACCENT)
-        self.text("00:00:%02d" % left, (WIN_W // 2, 86), self.f_clock,
+        self.text("00:00:%02d" % left, (WIN_W // 2, 128), self.f_clock,
                   colour, center=True)
 
     def _draw_scoreboard(self):
@@ -499,15 +534,15 @@ class ClientUI:
                 name, score, active = "waiting...", "-", False
             colour = GOOD if active else TEXT
             if side == "left":
-                rect = self.text(name, (x, 140), self.f_head, colour)
-                self.text(score, (x, 174), self.f_clock, WARN)
+                rect = self.text(name, (x, 182), self.f_head, colour)
+                self.text(score, (x, 210), self.f_clock, WARN)
                 if active:
                     pygame.draw.rect(self.screen, GOOD,
                                      (x, rect.bottom + 4, rect.width, 3),
                                      border_radius=2)
             else:
-                rect = self.text(name, (x, 140), self.f_head, colour, right=True)
-                self.text(score, (x, 174), self.f_clock, WARN, right=True)
+                rect = self.text(name, (x, 182), self.f_head, colour, right=True)
+                self.text(score, (x, 210), self.f_clock, WARN, right=True)
                 if active:
                     pygame.draw.rect(self.screen, GOOD,
                                      (rect.right - rect.width, rect.bottom + 4,

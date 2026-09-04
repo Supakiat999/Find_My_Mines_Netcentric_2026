@@ -419,6 +419,8 @@ class Server:
             self._on_flag(rec, msg)
         elif kind == protocol.REMATCH:
             self._on_rematch(rec)
+        elif kind == protocol.SET_MODE:
+            self._on_set_mode(rec, msg)
 
     def _unique_name(self, wanted):
         taken = {c.name for c in self._joined_clients() if c.name}
@@ -489,6 +491,22 @@ class Server:
         if rec.role == "player" and self.game.toggle_flag(rec.id,
                                                           self._cell_from(msg)):
             self.push_state()
+
+    def _on_set_mode(self, rec, msg):
+        """Players may switch the game from their own window.
+
+        The server still owns the decision - it validates the mode and
+        deals the new board - but players should not have to walk over to
+        the server console to find the other games.
+        """
+        mode = msg.get("mode")
+        if rec.role != "player":
+            self._send(rec, protocol.ERROR, message="only players can change mode")
+            return
+        if mode not in game_rules.MODES:
+            return
+        self.say("%s switched the mode" % rec.name)
+        self.set_mode(mode)
 
     def _on_rematch(self, rec):
         if self.game.phase != game_rules.PHASE_ENDED or rec.role != "player":
