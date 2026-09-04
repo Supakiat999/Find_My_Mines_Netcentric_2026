@@ -193,6 +193,31 @@ hotspot is the reliable fallback for the demo, so set one up in advance.
 
 ---
 
+## Server says "Address already in use" (Errno 48)
+
+Another `server.py` already owns the port — a second launch always fails,
+even with `SO_REUSEADDR`. Most often it is the old pygame window still
+open in another terminal.
+
+```bash
+lsof -iTCP:55555 -sTCP:LISTEN
+ps aux | grep server.py
+```
+
+Reuse that window, or stop it (`kill <PID>`), then `python server.py`
+again. To sidestep without killing (use `55557+` — `55556` is the UDP
+discovery beacon):
+
+```bash
+python server.py 55557
+python client.py <server-ip> 55557
+```
+
+Close the server with `Esc` or the window close button so the port is
+freed; `Ctrl-C` in its terminal works too.
+
+---
+
 ## Playing
 
 - Whoever joins first is player 1; the second is player 2. The match starts

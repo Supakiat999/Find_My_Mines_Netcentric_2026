@@ -16,6 +16,7 @@ Run:  python server.py
 """
 
 import queue
+import signal
 import socket
 import sys
 import threading
@@ -83,6 +84,15 @@ class Server:
 
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # macOS/BSD: SO_REUSEADDR alone does not allow a rapid rebind the
+        # way it does on Linux.  SO_REUSEPORT (where available) lets a
+        # cleanly-shut-down server rebind immediately after Esc / red-dot
+        # close instead of surfacing Errno 48.  Guarded: Linux keeps the
+        # current behaviour, platforms without it are unaffected.
+        try:
+            self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
         self.listener.bind((config.BIND_HOST, config.SERVER_PORT))
         self.listener.listen(8)
         self.listener.settimeout(0.5)     # so the accept loop can be stopped
@@ -90,6 +100,7 @@ class Server:
         self._ip_checked_at = 0.0
         self._beacon_stop = None
         self._beacon_thread = None
+        self._accept_thread = None
 
     def current_ip(self):
         """Our LAN address, re-checked as we go.
@@ -119,7 +130,9 @@ class Server:
     # networking
     # ------------------------------------------------------------------
     def start_network(self):
-        threading.Thread(target=self._accept_loop, daemon=True).start()
+        self._accept_thread = threading.Thread(target=self._accept_loop,
+                                               daemon=True)
+        self._accept_thread.start()
         self.say("Listening on %s:%d  (LAN %s)"
                  % (config.BIND_HOST, config.SERVER_PORT, self.lan_ip))
         others = [ip for ip in protocol.local_ips() if ip != self.lan_ip]
@@ -505,10 +518,22 @@ class Server:
             self.push_state()
 
     def shutdown(self):
+        """Release the port deterministically.
+
+        Closing the listener wakes the accept thread (0.5s timeout at
+        worst); joining both background threads here means a red-dot /
+        Esc close frees TCP SERVER_PORT within ~1s, so an immediate
+        restart does not hit Errno 48.  Daemon flags stay as a backstop
+        for hard kills - this path is for clean exits.
+        """
         self.running = False
         if self._beacon_stop is not None:
             self._beacon_stop.set()
         for rec in self._ordered_clients():
+            try:
+                rec.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 rec.sock.close()
             except OSError:
@@ -517,6 +542,9 @@ class Server:
             self.listener.close()
         except OSError:
             pass
+        for thread in (self._accept_thread, self._beacon_thread):
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=1.5)
 
 
 # ----------------------------------------------------------------------
@@ -728,13 +756,43 @@ def main():
     args = [a for a in sys.argv[1:] if a.strip()]
     if args and args[0].strip().isdigit():
         config.SERVER_PORT = int(args[0].strip())
+    if config.SERVER_PORT == config.DISCOVERY_PORT:
+        print("Port %d is the UDP discovery beacon - pick a game port "
+              "other than %d (e.g. python server.py 55557, then "
+              "python client.py <server-ip> 55557)."
+              % (config.SERVER_PORT, config.DISCOVERY_PORT))
+        sys.exit(2)
     try:
         server = Server()
     except OSError as exc:
-        print("Could not bind port %d: %s" % (config.SERVER_PORT, exc))
+        print("Could not bind TCP port %d: %s" % (config.SERVER_PORT, exc))
+        print("Something already owns it.  Find it with:")
+        print("    lsof -iTCP:%d -sTCP:LISTEN" % config.SERVER_PORT)
+        print("    ps aux | grep server.py")
+        print("Then either reuse that window, stop it (kill <PID>), or "
+              "sidestep it:")
+        print("    python server.py 55557   # then: python client.py <ip> 55557")
         sys.exit(1)
+
+    def _stop(signum, frame):
+        server.running = False
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _stop)
+        except (OSError, ValueError):
+            pass
     server.start_network()
-    ServerUI(server).run()
+    try:
+        ServerUI(server).run()
+    except KeyboardInterrupt:
+        server.running = False
+    finally:
+        server.shutdown()
+        try:
+            pygame.quit()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
