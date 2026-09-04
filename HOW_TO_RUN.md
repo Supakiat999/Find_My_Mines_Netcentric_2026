@@ -90,8 +90,10 @@ SERVER_HOST = "192.168.1.14"
 python client.py 192.168.1.14
 ```
 
-Both do the same thing. The argument is the safer one when the server has
-just moved to a new address, because there is no file to forget to save.
+Both do the same thing on this branch. The argument is the safer one when the
+server has just moved, because there is no file to forget to save - but note it
+only exists here on `enhanced`, not on `main`.
+See [CHANGELOG.md](CHANGELOG.md) for what separates the two.
 
 ### Step 4 — Play
 
