@@ -1,0 +1,2 @@
+# Find_My_Mines_Netcentric_2026
+Netcentric Project
