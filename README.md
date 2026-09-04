@@ -76,6 +76,24 @@ never disturbed by the extras.
 | **Radius 2** | 6x6, 11 bombs | Same rules, but a hint counts **2** for every bomb touching the slot and **1** for every bomb a ring further out - so each bomb influences 24 slots instead of 8, and hints can run past 8. |
 | **Minesweeper** | 6x6, 11 bombs | Inverted: bombs are the hazard. Open safe ground for a point per slot and keep your turn; a zero cascades open; hitting a bomb ends your turn for nothing. The match ends when the last safe slot is open. |
 | **3D Cube** | 4x4x4, 19 bombs | The classic hunt in three dimensions. Every slot has up to **26** neighbours instead of 8. All four layers are drawn side by side, so the whole cube is clickable at once. |
+| **Custom** | you decide | Set the board size, the bomb count, the seconds per turn, flat or cube, which hint style, and whether bombs are points or hazards. Any combination of the above. |
+
+### Custom settings
+
+Pick **Custom** and a panel opens. Either player can change any of it while you
+play; the board is re-dealt the moment something changes.
+
+| Setting | Choices |
+|---|---|
+| Board size | 4-10 flat, 3-5 as a cube |
+| Bombs | 1 up to 45% of the slots |
+| Seconds per turn | 5 to 60 |
+| Shape | Flat grid or cube |
+| Hints | Touching bombs only, or the two-ring 2/1 weighting |
+| Bombs are | Points to collect, or hazards to avoid |
+
+Every value is clamped on the **server** by `game.clamp_custom()`, so a client
+cannot ask for a 500x500 board or more bombs than there are slots.
 
 **Flags.** Right-click marks a slot in any mode. A flag only blocks the player
 who planted it, so it is a note to yourself and cannot be used to wall the board

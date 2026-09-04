@@ -98,6 +98,21 @@ neighbours rather than 8, so the hints read very differently. All four layers
 are drawn side by side on both the client and the server console, so the whole
 cube is visible and clickable without paging through slices.
 
+### Custom mode
+
+A fifth mode where the players set the game up themselves: board size, bomb
+count, seconds per turn, flat or cube, which hint style, and whether bombs are
+points or hazards. The panel opens from the **Custom** button in the game
+window, and either player can change anything mid-session - the board is
+re-dealt on each change.
+
+It reuses the engine rather than adding rules: the shape feeds `dims`, the hint
+style picks the same weighting the Radius 2 mode uses, and "bombs are hazards"
+runs the same code path as Minesweeper mode. The only new logic is
+`clamp_custom()`, which forces whatever a client sends into something playable -
+sizes clipped to the configured limits, and never more bombs than 45% of the
+board. Settings arriving from a client are never trusted.
+
 ### Flags
 
 Right-click marks a slot in any mode. A flag only blocks the player who planted

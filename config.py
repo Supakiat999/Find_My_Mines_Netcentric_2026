@@ -32,6 +32,26 @@ DEFAULT_MODE = "classic"
 GRID_3D = (4, 4, 4)
 BOMB_COUNT_3D = 19
 
+# --- Custom mode -------------------------------------------------------
+# What the players start from when they pick Custom.  Every value can be
+# changed from the game window while playing; game.py clamps whatever
+# arrives to the limits below.
+DEFAULT_CUSTOM = {
+    "size": 6,             # board is size x size, or size x size x size
+    "bombs": 11,
+    "turn_seconds": 10,
+    "hints": "simple",     # "simple" counts touching bombs, "radius2" weights 2 then 1
+    "goal": "collect",     # "collect" scores bombs, "avoid" makes them the hazard
+    "shape": "flat",       # "flat" or "cube"
+}
+
+CUSTOM_LIMITS = {
+    "size_flat": (4, 10),
+    "size_cube": (3, 5),
+    "turn_seconds": (5, 60),
+    "max_bomb_share": 0.45,   # never so many bombs that the board is unplayable
+}
+
 # The brief says a player who finds a bomb "continues their turn until time
 # runs out".  We read that as: the countdown keeps running, it is not
 # restarted.  Flip this to True if it should restart on every bomb.

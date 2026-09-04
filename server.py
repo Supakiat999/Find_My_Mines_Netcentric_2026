@@ -287,7 +287,9 @@ class Server:
             "bombs_left": g.bombs_left,
             "bombs_total": g.bomb_count,
             "seconds_left": self._seconds_left(),
-            "turn_seconds": config.TURN_SECONDS,
+            "turn_seconds": self.game.turn_seconds,
+            "custom": dict(self.game.custom),
+            "custom_limits": dict(config.CUSTOM_LIMITS),
             "rematch_votes": sorted(self.rematch_votes),
             "spectators": [c.name for c in self._joined_clients()
                            if c.role == "spectator"],
@@ -322,7 +324,7 @@ class Server:
                  % names.get(self.game.current_turn, "?"))
 
     def _start_turn_clock(self):
-        self.turn_deadline = time.time() + config.TURN_SECONDS
+        self.turn_deadline = time.time() + self.game.turn_seconds
         self.last_tick_sent = None
 
     def _stop_turn_clock(self):
@@ -421,6 +423,8 @@ class Server:
             self._on_rematch(rec)
         elif kind == protocol.SET_MODE:
             self._on_set_mode(rec, msg)
+        elif kind == protocol.SET_CUSTOM:
+            self._on_set_custom(rec, msg)
 
     def _unique_name(self, wanted):
         taken = {c.name for c in self._joined_clients() if c.name}
@@ -445,7 +449,7 @@ class Server:
                    dims=list(self.game.dims),
                    mode=self.game.mode,
                    bombs_total=self.game.bomb_count,
-                   turn_seconds=config.TURN_SECONDS)
+                   turn_seconds=self.game.turn_seconds)
         self.say("%s joined as %s (%d online)"
                  % (rec.name, rec.role, len(self._joined_clients())))
         self.push_clients()
@@ -507,6 +511,34 @@ class Server:
             return
         self.say("%s switched the mode" % rec.name)
         self.set_mode(mode)
+
+    def _on_set_custom(self, rec, msg):
+        """Board size, bomb count and rules for the custom game.
+
+        Whatever a client sends is clamped by game.clamp_custom before it
+        is used, so a hand-crafted message cannot ask for a 500x500 board
+        or more bombs than slots.
+        """
+        if rec.role != "player":
+            self._send(rec, protocol.ERROR,
+                       message="only players can change the settings")
+            return
+        settings = msg.get("settings")
+        if not isinstance(settings, dict):
+            return
+        applied = self.game.set_custom({**self.game.custom, **settings})
+        self.say("%s set %dx%d%s, %d bombs, %ds"
+                 % (rec.name, applied["size"], applied["size"],
+                    "x%d" % applied["size"] if applied["shape"] == "cube" else "",
+                    applied["bombs"], applied["turn_seconds"]))
+        if self.game.mode == game_rules.MODE_CUSTOM:
+            self.rematch_votes.clear()
+            self._stop_turn_clock()
+            self.first_match_done = False
+            self.game.reset_scores()
+            self._broadcast(protocol.SERVER_RESET)
+            self._maybe_autostart()
+        self.push_state()
 
     def _on_rematch(self, rec):
         if self.game.phase != game_rules.PHASE_ENDED or rec.role != "player":

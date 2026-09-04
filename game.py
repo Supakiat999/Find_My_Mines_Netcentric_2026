@@ -28,14 +28,16 @@ MODE_CLASSIC = "classic"    # the graded game: find bombs, one point each
 MODE_RADIUS2 = "radius2"    # same, but a bomb's hint reaches two rings out
 MODE_SWEEPER = "sweeper"    # inverted: bombs are bad, open safe ground
 MODE_CUBE = "cube"          # the classic game on a 4x4x4 cube
+MODE_CUSTOM = "custom"      # players set the board and the rules themselves
 
-MODES = [MODE_CLASSIC, MODE_RADIUS2, MODE_SWEEPER, MODE_CUBE]
+MODES = [MODE_CLASSIC, MODE_RADIUS2, MODE_SWEEPER, MODE_CUBE, MODE_CUSTOM]
 
 MODE_LABELS = {
     MODE_CLASSIC: "Classic",
     MODE_RADIUS2: "Radius 2",
     MODE_SWEEPER: "Minesweeper",
     MODE_CUBE: "3D Cube",
+    MODE_CUSTOM: "Custom",
 }
 
 MODE_BLURBS = {
@@ -43,12 +45,41 @@ MODE_BLURBS = {
     MODE_RADIUS2: "Hints reach two rings: 2 then 1.",
     MODE_SWEEPER: "Bombs are bad. Clear safe ground.",
     MODE_CUBE: "4x4x4 cube - 26 neighbours.",
+    MODE_CUSTOM: "Your board, your rules.",
 }
+
+
+def clamp_custom(settings):
+    """Force a settings dict into something playable.
+
+    Everything here arrives from a client, so nothing is trusted: sizes
+    are clipped to the limits in config and the bomb count can never
+    swallow the whole board.
+    """
+    limits = config.CUSTOM_LIMITS
+    out = dict(config.DEFAULT_CUSTOM)
+    out.update({k: v for k, v in (settings or {}).items() if k in out})
+
+    out["shape"] = "cube" if out.get("shape") == "cube" else "flat"
+    out["hints"] = "radius2" if out.get("hints") == "radius2" else "simple"
+    out["goal"] = "avoid" if out.get("goal") == "avoid" else "collect"
+
+    low, high = limits["size_cube" if out["shape"] == "cube" else "size_flat"]
+    out["size"] = max(low, min(high, int(out.get("size", low))))
+
+    low, high = limits["turn_seconds"]
+    out["turn_seconds"] = max(low, min(high, int(out.get("turn_seconds", low))))
+
+    cells = out["size"] ** (3 if out["shape"] == "cube" else 2)
+    most = max(1, int(cells * limits["max_bomb_share"]))
+    out["bombs"] = max(1, min(most, int(out.get("bombs", 1))))
+    return out
 
 
 class Game:
     def __init__(self, mode=None, rng=None):
         self.rng = rng or random.Random()
+        self.custom = clamp_custom(config.DEFAULT_CUSTOM)
 
         self.players = []        # ordered player ids; index 0 and 1 play
         self.scores = {}         # player id -> score for the current match
@@ -64,12 +95,38 @@ class Game:
         if self.mode == MODE_CUBE:
             self.dims = tuple(config.GRID_3D)
             self.bomb_count = config.BOMB_COUNT_3D
+        elif self.mode == MODE_CUSTOM:
+            size = self.custom["size"]
+            self.dims = ((size, size, size) if self.custom["shape"] == "cube"
+                         else (size, size))
+            self.bomb_count = self.custom["bombs"]
         else:
             self.dims = (config.GRID_SIZE, config.GRID_SIZE)
             self.bomb_count = config.BOMB_COUNT
         self.phase = PHASE_WAITING
         self.current_turn = None
         self._clear_board()
+
+    def set_custom(self, settings):
+        """Apply new custom settings, and re-shape the board if we are in
+        that mode.  Returns the settings actually used, after clamping."""
+        self.custom = clamp_custom(settings)
+        if self.mode == MODE_CUSTOM:
+            self.set_mode(MODE_CUSTOM)
+        return self.custom
+
+    @property
+    def turn_seconds(self):
+        """Seconds per turn - the custom game may have its own."""
+        if self.mode == MODE_CUSTOM:
+            return self.custom["turn_seconds"]
+        return config.TURN_SECONDS
+
+    @property
+    def bombs_are_bad(self):
+        """True when opening a bomb is a mistake rather than the point."""
+        return (self.mode == MODE_SWEEPER
+                or (self.mode == MODE_CUSTOM and self.custom["goal"] == "avoid"))
 
     @property
     def is_3d(self):
@@ -106,7 +163,10 @@ class Game:
 
     def _compute_hints(self):
         for cell in self.cells():
-            if self.mode == MODE_RADIUS2:
+            weighted = (self.mode == MODE_RADIUS2
+                        or (self.mode == MODE_CUSTOM
+                            and self.custom["hints"] == "radius2"))
+            if weighted:
                 # A bomb touching the slot counts 2, one a ring further out
                 # counts 1 - so every bomb influences 24 slots, not 8.
                 self.hints[cell] = (2 * self._bombs_at(cell, 1)
@@ -215,7 +275,7 @@ class Game:
         if self.flags.get(cell) == player_id:
             return {"ok": False, "reason": "remove your flag first"}
 
-        if self.mode == MODE_SWEEPER:
+        if self.bombs_are_bad:
             return self._pick_sweeper(player_id, cell)
         return self._pick_hunt(player_id, cell)
 

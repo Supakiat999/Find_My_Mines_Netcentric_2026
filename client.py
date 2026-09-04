@@ -59,6 +59,18 @@ SCREEN_ERROR = "error"
 CELL = 68
 GAP = 8
 
+# The custom game's controls: steppers first, then either/or choices.
+CUSTOM_STEPS = [
+    ("Board size", "size", 1),
+    ("Bombs", "bombs", 1),
+    ("Seconds per turn", "turn_seconds", 5),
+]
+CUSTOM_CHOICES = [
+    ("Shape", "shape", [("flat", "Flat"), ("cube", "Cube")]),
+    ("Hints", "hints", [("simple", "Touching"), ("radius2", "Two rings")]),
+    ("Bombs are", "goal", [("collect", "Points"), ("avoid", "Hazards")]),
+]
+
 
 class NetworkClient:
     """One TCP connection to the server, read on its own thread."""
@@ -138,6 +150,7 @@ class ClientUI:
 
         self.welcome_dims = None      # board shape, until the first state
         self.mode_rects = self._mode_rects()
+        self.settings_open = False
         self.rematch_rect = pygame.Rect(WIN_W // 2 - 100, WIN_H // 2 + 66, 200, 52)
 
     @staticmethod
@@ -295,13 +308,17 @@ class ClientUI:
         """
         if self.is_3d:
             layers, rows, cols = self.dims
-            size, gap, layer_gap = 42, 6, 18
+            gap, layer_gap = 6, 18
+            room = WIN_W - 48 - (layers - 1) * layer_gap
+            size = max(16, min(42, room // (layers * cols) - gap))
             layer_w = cols * (size + gap) - gap
             total = layers * layer_w + (layers - 1) * layer_gap
             return size, gap, layer_gap, (WIN_W - total) // 2, 320, layer_w
         rows, cols = self.dims
-        total = cols * (CELL + GAP) - GAP
-        return CELL, GAP, 0, (WIN_W - total) // 2, 252, total
+        # shrink the slots rather than run off the window on a big board
+        size = max(26, min(CELL, (WIN_W - 80) // cols - GAP))
+        total = cols * (size + GAP) - GAP
+        return size, GAP, 0, (WIN_W - total) // 2, 252, total
 
     def cell_rect(self, cell):
         size, gap, layer_gap, ox, oy, layer_w = self._geometry()
@@ -389,6 +406,9 @@ class ClientUI:
                     self.net.send(protocol.REMATCH)
                     self.voted_rematch = True
             return
+        if self._settings_click(event):
+            return
+
         if event.button == 1:
             for mode, box in self.mode_rects:
                 if box.collidepoint(event.pos):
@@ -396,6 +416,9 @@ class ClientUI:
                         self.say("Only players can change the mode")
                     elif mode != self.mode:
                         self.net.send(protocol.SET_MODE, mode=mode)
+                        self.settings_open = mode == game_rules.MODE_CUSTOM
+                    elif mode == game_rules.MODE_CUSTOM:
+                        self.settings_open = not self.settings_open
                     return
 
         hit = self.cell_at(event.pos)
@@ -488,6 +511,8 @@ class ClientUI:
         self._draw_board()
         self._draw_status()
         self._draw_online()
+        if self.settings_open and self.mode == game_rules.MODE_CUSTOM:
+            self._draw_settings()
         if self.match_end is not None:
             self._draw_end_overlay()
 
@@ -506,6 +531,115 @@ class ClientUI:
                       center=True)
         blurb = game_rules.MODE_BLURBS.get(self.mode, "")
         self.text(blurb, (WIN_W // 2, 100), self.f_small, MUTED, center=True)
+
+    # ------------------------------------------------------------------
+    # the custom game's settings panel
+    # ------------------------------------------------------------------
+    @property
+    def custom(self):
+        return (self.state or {}).get("custom", {})
+
+    def _settings_widgets(self):
+        """Panel rectangles, rebuilt each frame so one layout serves both
+        drawing and clicking."""
+        card = pygame.Rect(0, 0, 470, 430)
+        card.center = (WIN_W // 2, 452)
+        controls = []                      # (rect, key, value_or_delta, is_step)
+        y = card.y + 64
+        for _, key, step in CUSTOM_STEPS:
+            controls.append((pygame.Rect(card.right - 148, y, 34, 30), key, -step, True))
+            controls.append((pygame.Rect(card.right - 58, y, 34, 30), key, step, True))
+            y += 46
+        for _, key, options in CUSTOM_CHOICES:
+            x = card.right - 210
+            for value, _text in options:
+                controls.append((pygame.Rect(x, y, 92, 30), key, value, False))
+                x += 100
+            y += 46
+        close = pygame.Rect(card.centerx - 60, card.bottom - 46, 120, 34)
+        return card, controls, close
+
+    def _settings_click(self, event):
+        """Returns True when the panel swallowed the click."""
+        if not (self.settings_open and self.mode == game_rules.MODE_CUSTOM):
+            return False
+        if event.button != 1:
+            return False
+        card, controls, close = self._settings_widgets()
+        if close.collidepoint(event.pos):
+            self.settings_open = False
+            return True
+        for rect, key, value, is_step in controls:
+            if not rect.collidepoint(event.pos):
+                continue
+            if self.role != "player":
+                self.say("Only players can change the settings")
+                return True
+            current = self.custom
+            wanted = (current.get(key, 0) + value) if is_step else value
+            self.net.send(protocol.SET_CUSTOM, settings={key: wanted})
+            return True
+        return card.collidepoint(event.pos)   # clicks on the card do nothing
+
+    def _draw_settings(self):
+        card, controls, close = self._settings_widgets()
+        veil = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
+        veil.fill((10, 14, 20, 200))
+        self.screen.blit(veil, (0, 0))
+        pygame.draw.rect(self.screen, PANEL, card, border_radius=14)
+        pygame.draw.rect(self.screen, LINE, card, width=1, border_radius=14)
+
+        self.text("CUSTOM GAME", (card.centerx, card.y + 26), self.f_head,
+                  TEXT, center=True)
+        current = self.custom
+        mouse = pygame.mouse.get_pos()
+        index = 0
+        y = card.y + 64
+
+        for label, key, _step in CUSTOM_STEPS:
+            self.text(label, (card.x + 24, y + 5), self.f_body, MUTED)
+            for _ in range(2):
+                rect, _k, delta, _is_step = controls[index]
+                hot = rect.collidepoint(mouse)
+                pygame.draw.rect(self.screen, PANEL_2 if hot else BG, rect,
+                                 border_radius=6)
+                pygame.draw.rect(self.screen, LINE, rect, width=1, border_radius=6)
+                self.text("+" if delta > 0 else "-", rect.center, self.f_body,
+                          TEXT, center=True)
+                index += 1
+            value = current.get(key, "?")
+            if key == "turn_seconds":
+                value = "%ss" % value
+            self.text(value, (card.right - 96, y + 3), self.f_head, WARN,
+                      center=False)
+            y += 46
+
+        for label, key, options in CUSTOM_CHOICES:
+            self.text(label, (card.x + 24, y + 5), self.f_body, MUTED)
+            for value, text in options:
+                rect, _k, _v, _is_step = controls[index]
+                active = current.get(key) == value
+                hot = rect.collidepoint(mouse)
+                fill = (37, 99, 235) if active else (PANEL_2 if hot else BG)
+                pygame.draw.rect(self.screen, fill, rect, border_radius=6)
+                pygame.draw.rect(self.screen, ACCENT if active else LINE, rect,
+                                 width=1, border_radius=6)
+                self.text(text, rect.center, self.f_small,
+                          (235, 244, 255) if active else MUTED, center=True)
+                index += 1
+            y += 46
+
+        limits = (self.state or {}).get("custom_limits", {})
+        low, high = limits.get(
+            "size_cube" if current.get("shape") == "cube" else "size_flat", (0, 0))
+        self.text("size %s-%s, bombs up to %d%% of the board"
+                  % (low, high, int(limits.get("max_bomb_share", 0) * 100)),
+                  (card.centerx, card.bottom - 66), self.f_small, MUTED, center=True)
+
+        hot = close.collidepoint(mouse)
+        pygame.draw.rect(self.screen, (37, 99, 235) if hot else PANEL_2, close,
+                         border_radius=8)
+        self.text("PLAY", close.center, self.f_body, (235, 244, 255), center=True)
 
     def _draw_clock(self):
         running = self.phase == game_rules.PHASE_PLAYING

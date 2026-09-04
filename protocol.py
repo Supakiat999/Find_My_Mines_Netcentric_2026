@@ -13,6 +13,7 @@ PICK = "pick"          # {row, col} - plus {layer} in the cube mode
 FLAG = "flag"          # {row, col, layer} - plant or lift a marker
 REMATCH = "rematch"    # {}
 SET_MODE = "set_mode"  # {mode} - players can switch the game from the client
+SET_CUSTOM = "set_custom"  # {settings} - board size, bombs, rules for Custom
 
 # --- server -> client --------------------------------------------------
 WELCOME = "welcome"        # {client_id, role, message}
