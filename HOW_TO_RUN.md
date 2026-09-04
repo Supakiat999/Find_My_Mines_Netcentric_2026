@@ -76,15 +76,22 @@ netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow proto
 
 Without this, other computers cannot reach the server even on the same Wi-Fi.
 
-### Step 3 — On the other computer, set the address
+### Step 3 — On the other computer, point the client at the server
 
-Open `config.py` and change **one line** to the IP from step 1:
+Either edit `config.py`:
 
 ```python
 SERVER_HOST = "192.168.1.14"
 ```
 
-Leave `SERVER_PORT = 55555` alone.
+...or skip the file entirely and pass the address when you start the client:
+
+```bash
+python client.py 192.168.1.14
+```
+
+Both do the same thing. The argument is the safer one when the server has
+just moved to a new address, because there is no file to forget to save.
 
 ### Step 4 — Play
 
@@ -102,8 +109,8 @@ the other runs only a client.
 
 > 1. Install Python 3, then run `pip install -r requirements.txt`
 > 2. Download the code: https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026
-> 3. Open `config.py` and set `SERVER_HOST = "<my IP>"`
-> 4. Run `python client.py`, type a nickname, press Enter
+> 3. Run `python client.py <my IP>` — type a nickname, press Enter
+>    (or set `SERVER_HOST` in `config.py` and just run `python client.py`)
 > 5. You must be on the same Wi-Fi as me. If it will not connect, join my phone
 >    hotspot and I will send the new IP.
 
