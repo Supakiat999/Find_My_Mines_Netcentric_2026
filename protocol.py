@@ -9,7 +9,8 @@ import socket
 
 # --- client -> server --------------------------------------------------
 JOIN = "join"          # {nickname}
-PICK = "pick"          # {row, col}
+PICK = "pick"          # {row, col} - plus {layer} in the cube mode
+FLAG = "flag"          # {row, col, layer} - plant or lift a marker
 REMATCH = "rematch"    # {}
 
 # --- server -> client --------------------------------------------------

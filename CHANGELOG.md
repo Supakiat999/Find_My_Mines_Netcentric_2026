@@ -11,6 +11,7 @@ between the two branches actually is.
 |---|---|---|
 | **`main`** | `v1-demo` | The version demonstrated in class. The complete game, nothing more. |
 | **`enhanced`** | `v2-enhanced` | The same game, plus four aids for getting connected across machines. |
+| **`kk`** | `v3-kk` | Everything in `enhanced`, plus three extra game modes and a per-match score reset. |
 
 **The game itself is identical in both.** Same rules, same board, same screens,
 same messages on the wire. A client from one branch plays perfectly well against
@@ -65,6 +66,53 @@ more step to get wrong when the server has just moved.
 
 ---
 
+## What `kk` adds
+
+### Scores reset every match
+
+Scores used to accumulate across rematches, so the second match started from
+the first one's numbers and a rematch was never a fair contest. A match now
+starts level; only the score shown at the end belongs to that match. The
+server's Reset still clears everything.
+
+### Three extra modes
+
+The mode is picked on the server console, next to RESET. Changing it deals a
+fresh board for everyone. **Classic stays the default**, so the graded game is
+never altered by the extras.
+
+**Radius 2** keeps the classic rules and changes only what the numbers mean. A
+hint counts **2** for each bomb touching the slot and **1** for each bomb one
+ring further out, so a single bomb influences the 8 slots around it *and* the 16
+beyond - 24 in all. Hints can therefore exceed 8, which classic can never
+produce. Scoring is untouched: one point per bomb found.
+
+**Minesweeper** inverts the goal. Bombs are the hazard: open safe ground for a
+point per slot and keep your turn, with a zero cascading open the way it does in
+the original game. Hitting a bomb ends your turn and scores nothing. The match
+finishes when the last safe slot is opened.
+
+**3D Cube** moves the hunt into three dimensions - a 4x4x4 cube of 64 slots with
+19 bombs, keeping roughly the flat board's density. Every interior slot has 26
+neighbours rather than 8, so the hints read very differently. All four layers
+are drawn side by side on both the client and the server console, so the whole
+cube is visible and clickable without paging through slices.
+
+### Flags
+
+Right-click marks a slot in any mode. A flag only blocks the player who planted
+it - shared flags would have let either player wall the board off from the
+other.
+
+### How the modes fit in one engine
+
+A slot is a coordinate tuple: `(row, col)` on a flat board, `(layer, row, col)`
+on the cube. Everything touching geometry goes through one `_neighbours()`
+helper that takes a distance, so the third dimension and the two-ring hints both
+came out of the same routine rather than a second copy of the rules.
+
+---
+
 ## Bugs found and fixed during development
 
 These are in **both** branches — they are part of the game, not the connection
@@ -95,6 +143,12 @@ Three suites drive the real code over real sockets, with no mocking:
 
 The `enhanced` branch adds a fourth suite for the browser check, including that
 it takes no seat and cannot disturb a live match.
+
+`kk` adds two more: one for the rules of all four modes (brute-force recounts
+of the radius-2 weighting and the cube's 26 neighbours, the cascade, and the
+flag rules), and one that drives the modes over real sockets through real
+client objects - switching mode, clicking into a cube layer, and checking that
+every one of the 64 slots is reachable on screen.
 
 ---
 

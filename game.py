@@ -3,8 +3,14 @@
 No sockets, no pygame, no threads live in here - just the board and the
 turn order.  That keeps the rules testable on their own and means the
 server is the only place that has to worry about concurrency.
+
+Four modes share one board engine.  A slot is a coordinate tuple: (row, col)
+on a flat board, (layer, row, col) on the cube.  Everything that touches
+geometry goes through _neighbours(), so growing a third dimension did not
+mean rewriting the rules.
 """
 
+import itertools
 import random
 
 import config
@@ -12,72 +18,146 @@ import config
 # Phases of a room.
 PHASE_WAITING = "waiting"   # not enough players seated yet
 PHASE_PLAYING = "playing"   # a match is running
-PHASE_ENDED = "ended"       # all bombs found, waiting on rematch votes
+PHASE_ENDED = "ended"       # finished, waiting on rematch votes
 
 BOMB = "bomb"               # a revealed bomb, in a board view
 HIDDEN_BOMB = "hidden_bomb"  # only ever sent to the server's own admin view
 
+# Modes.
+MODE_CLASSIC = "classic"    # the graded game: find bombs, one point each
+MODE_RADIUS2 = "radius2"    # same, but a bomb's hint reaches two rings out
+MODE_SWEEPER = "sweeper"    # inverted: bombs are bad, open safe ground
+MODE_CUBE = "cube"          # the classic game on a 4x4x4 cube
+
+MODES = [MODE_CLASSIC, MODE_RADIUS2, MODE_SWEEPER, MODE_CUBE]
+
+MODE_LABELS = {
+    MODE_CLASSIC: "Classic",
+    MODE_RADIUS2: "Radius 2",
+    MODE_SWEEPER: "Minesweeper",
+    MODE_CUBE: "3D Cube",
+}
+
+MODE_BLURBS = {
+    MODE_CLASSIC: "Find bombs, one point each.",
+    MODE_RADIUS2: "Hints reach two rings: 2 then 1.",
+    MODE_SWEEPER: "Bombs are bad. Clear safe ground.",
+    MODE_CUBE: "4x4x4 cube - 26 neighbours.",
+}
+
 
 class Game:
-    def __init__(self, grid_size=None, bomb_count=None, rng=None):
-        self.grid_size = grid_size or config.GRID_SIZE
-        self.bomb_count = bomb_count or config.BOMB_COUNT
+    def __init__(self, mode=None, rng=None):
         self.rng = rng or random.Random()
 
         self.players = []        # ordered player ids; index 0 and 1 play
-        self.scores = {}         # player id -> score, kept across rematches
+        self.scores = {}         # player id -> score for the current match
         self.phase = PHASE_WAITING
         self.current_turn = None
         self.last_winner = None  # winner of the previous match, starts next
+        self.set_mode(mode or config.DEFAULT_MODE)
+
+    # -- mode and shape -------------------------------------------------
+    def set_mode(self, mode):
+        """Switch mode and clear the board.  Scores are the caller's call."""
+        self.mode = mode if mode in MODES else MODE_CLASSIC
+        if self.mode == MODE_CUBE:
+            self.dims = tuple(config.GRID_3D)
+            self.bomb_count = config.BOMB_COUNT_3D
+        else:
+            self.dims = (config.GRID_SIZE, config.GRID_SIZE)
+            self.bomb_count = config.BOMB_COUNT
+        self.phase = PHASE_WAITING
+        self.current_turn = None
         self._clear_board()
+
+    @property
+    def is_3d(self):
+        return len(self.dims) == 3
+
+    @property
+    def grid_size(self):
+        """Width of the board - every mode is square in its rows and columns."""
+        return self.dims[-1]
+
+    @property
+    def cell_count(self):
+        total = 1
+        for size in self.dims:
+            total *= size
+        return total
+
+    def cells(self):
+        """Every slot on the board, as coordinate tuples."""
+        return itertools.product(*(range(size) for size in self.dims))
 
     # -- board ----------------------------------------------------------
     def _clear_board(self):
-        n = self.grid_size
         self.bombs = set()
-        self.revealed = {}                      # (row, col) -> BOMB or int
-        self.adjacent = [[0] * n for _ in range(n)]
+        self.revealed = {}       # slot -> BOMB or a hint number
+        self.flags = {}          # slot -> the player who planted the flag
+        self.hints = {}          # slot -> what it will show when opened
         self.bombs_found = 0
 
     def _place_bombs(self):
-        """Scatter bomb_count bombs at random, then cache neighbour counts."""
-        n = self.grid_size
-        cells = [(r, c) for r in range(n) for c in range(n)]
-        self.bombs = set(self.rng.sample(cells, self.bomb_count))
-        for r in range(n):
-            for c in range(n):
-                self.adjacent[r][c] = sum(
-                    1 for nr, nc in self._neighbours(r, c) if (nr, nc) in self.bombs
-                )
+        """Scatter bombs at random, then work out every slot's hint."""
+        self.bombs = set(self.rng.sample(list(self.cells()), self.bomb_count))
+        self._compute_hints()
 
-    def _neighbours(self, row, col):
-        """The eight surrounding cells, diagonals included, clipped to grid."""
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                if dr == 0 and dc == 0:
-                    continue
-                r, c = row + dr, col + dc
-                if 0 <= r < self.grid_size and 0 <= c < self.grid_size:
-                    yield r, c
+    def _compute_hints(self):
+        for cell in self.cells():
+            if self.mode == MODE_RADIUS2:
+                # A bomb touching the slot counts 2, one a ring further out
+                # counts 1 - so every bomb influences 24 slots, not 8.
+                self.hints[cell] = (2 * self._bombs_at(cell, 1)
+                                    + self._bombs_at(cell, 2))
+            else:
+                self.hints[cell] = self._bombs_at(cell, 1)
+
+    def _bombs_at(self, cell, distance):
+        return sum(1 for nb in self._neighbours(cell, distance)
+                   if nb in self.bombs)
+
+    def _neighbours(self, cell, distance=1):
+        """Every slot exactly `distance` steps away, diagonals included.
+
+        Distance 1 gives the 8 slots around a flat cell and the 26 around a
+        cube cell; distance 2 gives the ring beyond that.  Slots outside the
+        board are skipped, which is what clips the rings at the edges.
+        """
+        span = range(-distance, distance + 1)
+        for offset in itertools.product(span, repeat=len(cell)):
+            if max(abs(step) for step in offset) != distance:
+                continue                      # inside the ring, not on it
+            nb = tuple(v + step for v, step in zip(cell, offset))
+            if all(0 <= v < size for v, size in zip(nb, self.dims)):
+                yield nb
 
     def board_view(self, reveal_all=False):
-        """Board as nested lists: None hidden, "bomb", or a 0-8 count.
+        """The board as nested lists: None hidden, "bomb", or a hint number.
 
+        Flat modes give rows of slots; the cube gives layers of rows.
         reveal_all is for the server's own screen only - it marks bombs the
-        players have not found yet.  Clients never receive it.
+        players have not found yet, and clients never receive it.
         """
-        view = []
-        for r in range(self.grid_size):
-            row = []
-            for c in range(self.grid_size):
-                if (r, c) in self.revealed:
-                    row.append(self.revealed[(r, c)])
-                elif reveal_all and (r, c) in self.bombs:
-                    row.append(HIDDEN_BOMB)
-                else:
-                    row.append(None)
-            view.append(row)
-        return view
+        def value_at(cell):
+            if cell in self.revealed:
+                return self.revealed[cell]
+            if reveal_all and cell in self.bombs:
+                return HIDDEN_BOMB
+            return None
+
+        if self.is_3d:
+            layers, rows, cols = self.dims
+            return [[[value_at((l, r, c)) for c in range(cols)]
+                     for r in range(rows)] for l in range(layers)]
+        rows, cols = self.dims
+        return [[value_at((r, c)) for c in range(cols)] for r in range(rows)]
+
+    def flag_view(self):
+        """Flags as JSON-friendly pairs of slot and owner."""
+        return [{"cell": list(cell), "by": owner}
+                for cell, owner in self.flags.items()]
 
     # -- players --------------------------------------------------------
     def seat_players(self, player_ids):
@@ -107,34 +187,48 @@ class Game:
             return False
         self._clear_board()
         self._place_bombs()
+        # Every match starts level: scores belong to the match, not the
+        # session, so a rematch is a fresh contest.
+        self.reset_scores()
         if first_player not in self.players:
             first_player = self.rng.choice(self.players)
         self.current_turn = first_player
         self.phase = PHASE_PLAYING
         return True
 
-    def pick(self, player_id, row, col):
-        """Reveal one cell.  Returns a result dict describing what happened.
+    def pick(self, player_id, cell):
+        """Open one slot.  Returns a result dict describing what happened.
 
         The caller (the server) uses turn_changed to decide whether to
         restart the countdown.
         """
+        cell = tuple(cell)
         if self.phase != PHASE_PLAYING:
             return {"ok": False, "reason": "no match in progress"}
         if player_id != self.current_turn:
             return {"ok": False, "reason": "not your turn"}
-        if not (0 <= row < self.grid_size and 0 <= col < self.grid_size):
+        if len(cell) != len(self.dims) or not all(
+                0 <= v < size for v, size in zip(cell, self.dims)):
             return {"ok": False, "reason": "off the board"}
-        if (row, col) in self.revealed:
+        if cell in self.revealed:
             return {"ok": False, "reason": "slot already taken"}
+        if self.flags.get(cell) == player_id:
+            return {"ok": False, "reason": "remove your flag first"}
 
-        is_bomb = (row, col) in self.bombs
+        if self.mode == MODE_SWEEPER:
+            return self._pick_sweeper(player_id, cell)
+        return self._pick_hunt(player_id, cell)
+
+    def _pick_hunt(self, player_id, cell):
+        """Classic, radius-2 and cube: bombs are the prize."""
+        self.flags.pop(cell, None)
+        is_bomb = cell in self.bombs
         if is_bomb:
-            self.revealed[(row, col)] = BOMB
+            self.revealed[cell] = BOMB
             self.bombs_found += 1
             self.scores[player_id] = self.scores.get(player_id, 0) + 1
         else:
-            self.revealed[(row, col)] = self.adjacent[row][col]
+            self.revealed[cell] = self.hints[cell]
 
         match_over = self.bombs_found >= self.bomb_count
         if match_over:
@@ -146,10 +240,62 @@ class Game:
         return {
             "ok": True,
             "is_bomb": is_bomb,
-            "value": self.revealed[(row, col)],
+            "value": self.revealed[cell],
+            "opened": 1,
             "turn_changed": (not is_bomb) and not match_over,
             "match_over": match_over,
         }
+
+    def _pick_sweeper(self, player_id, cell):
+        """Minesweeper mode: bombs are the hazard, safe ground is the prize."""
+        self.flags.pop(cell, None)
+        if cell in self.bombs:
+            self.revealed[cell] = BOMB
+            self.bombs_found += 1
+            self.pass_turn()
+            return {"ok": True, "is_bomb": True, "value": BOMB, "opened": 0,
+                    "turn_changed": True, "match_over": False}
+
+        opened = self._open_region(cell)
+        self.scores[player_id] = self.scores.get(player_id, 0) + len(opened)
+        match_over = self.safe_left == 0
+        if match_over:
+            self._finish_match()
+        return {
+            "ok": True,
+            "is_bomb": False,
+            "value": self.revealed[cell],
+            "opened": len(opened),
+            "turn_changed": False,     # safe ground keeps your turn
+            "match_over": match_over,
+        }
+
+    def _open_region(self, cell):
+        """Open a slot, and spill outwards while the hints read zero."""
+        opened = []
+        stack = [cell]
+        while stack:
+            current = stack.pop()
+            if current in self.revealed or current in self.bombs:
+                continue
+            self.revealed[current] = self.hints[current]
+            self.flags.pop(current, None)
+            opened.append(current)
+            if self.hints[current] == 0:
+                stack.extend(self._neighbours(current, 1))
+        return opened
+
+    def toggle_flag(self, player_id, cell):
+        """Plant or lift a marker.  A flag only blocks the player who set it,
+        so nobody can wall the board off from their opponent."""
+        cell = tuple(cell)
+        if self.phase != PHASE_PLAYING or cell in self.revealed:
+            return False
+        if self.flags.get(cell) == player_id:
+            del self.flags[cell]
+        else:
+            self.flags[cell] = player_id
+        return True
 
     def pass_turn(self):
         """Hand the turn to the other player (empty slots and timeouts)."""
@@ -168,14 +314,22 @@ class Game:
         """Player id with the highest score, or None when it is a draw."""
         if not self.players:
             return None
-        ranked = sorted(self.players, key=lambda p: self.scores.get(p, 0), reverse=True)
-        if len(ranked) > 1 and self.scores.get(ranked[0], 0) == self.scores.get(ranked[1], 0):
+        ranked = sorted(self.players, key=lambda p: self.scores.get(p, 0),
+                        reverse=True)
+        if len(ranked) > 1 and self.scores.get(ranked[0], 0) == self.scores.get(
+                ranked[1], 0):
             return None
         return ranked[0]
 
     @property
     def bombs_left(self):
         return self.bomb_count - self.bombs_found
+
+    @property
+    def safe_left(self):
+        """Safe slots still covered - the sweeper mode's finish line."""
+        opened_safe = sum(1 for c in self.revealed if c not in self.bombs)
+        return (self.cell_count - self.bomb_count) - opened_safe
 
     def full_reset(self):
         """Server Reset button: wipe the board, the scores and the history."""

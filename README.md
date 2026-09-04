@@ -18,8 +18,8 @@ per bomb; the match ends when all 11 are found.
 |---|---|
 | Server — `config.py` · `protocol.py` · `game.py` · `server.py` | Done, verified by a headless socket test |
 | Client — `client.py` | Done, verified by two clients playing a full match |
-| Connection aids (this branch) | Live server address, browser check, address argument |
-| Extra features | Not started |
+| Connection aids | Live server address, browser check, address argument |
+| Game modes (this branch) | Classic, Radius 2, Minesweeper, 3D Cube |
 
 Step-by-step setup, including the two-computer demo, is in
 **[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
@@ -36,6 +36,7 @@ server from the other. They differ only in how you *find and reach* the server.
 |---|---|---|
 | **`main`** | `v1-demo` | The version demonstrated in class. The game and nothing else. |
 | **`enhanced`** | `v2-enhanced` | The same game plus four connection aids (below). |
+| **`kk`** | `v3-kk` | Everything in `enhanced`, plus three extra game modes and a per-match score reset. |
 
 What `enhanced` adds, all of it about getting connected:
 
@@ -59,6 +60,26 @@ git checkout main
 
 **[CHANGELOG.md](CHANGELOG.md)** explains every improvement and every bug fixed,
 in plain language.
+
+---
+
+## Game modes (`kk` branch)
+
+The mode is chosen on the **server console**, from the row of buttons beside
+RESET. Changing it deals a fresh board for everyone at once. `Classic` is the
+default and is exactly the game the assignment asks for, so the graded rules are
+never disturbed by the extras.
+
+| Mode | Board | How it plays |
+|---|---|---|
+| **Classic** | 6x6, 11 bombs | Find bombs, one point each. A bomb keeps your turn, an empty slot passes it. |
+| **Radius 2** | 6x6, 11 bombs | Same rules, but a hint counts **2** for every bomb touching the slot and **1** for every bomb a ring further out - so each bomb influences 24 slots instead of 8, and hints can run past 8. |
+| **Minesweeper** | 6x6, 11 bombs | Inverted: bombs are the hazard. Open safe ground for a point per slot and keep your turn; a zero cascades open; hitting a bomb ends your turn for nothing. The match ends when the last safe slot is open. |
+| **3D Cube** | 4x4x4, 19 bombs | The classic hunt in three dimensions. Every slot has up to **26** neighbours instead of 8. All four layers are drawn side by side, so the whole cube is clickable at once. |
+
+**Flags.** Right-click marks a slot in any mode. A flag only blocks the player
+who planted it, so it is a note to yourself and cannot be used to wall the board
+off from your opponent.
 
 ---
 
@@ -204,7 +225,7 @@ so both players see the same time and no client can stall its own turn.
 - Match ends when all 11 bombs are found; both clients then show **Win**/**Lost**
   with both scores and a Rematch button
 - A rematch needs **both** players to agree, and the previous **winner starts**
-- Scores carry over between rematches, and only the server's Reset clears them
+- Every match starts level: scores belong to the match, not the session
 
 Two readings of the brief were settled as follows, both changeable in one line:
 

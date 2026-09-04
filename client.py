@@ -136,10 +136,7 @@ class ClientUI:
         self.toast_until = 0
         self.running = True
 
-        # geometry
-        self.grid_w = config.GRID_SIZE * CELL + (config.GRID_SIZE - 1) * GAP
-        self.grid_x = (WIN_W - self.grid_w) // 2
-        self.grid_y = 232
+        self.welcome_dims = None      # board shape, until the first state
         self.rematch_rect = pygame.Rect(WIN_W // 2 - 100, WIN_H // 2 + 66, 200, 52)
 
     @staticmethod
@@ -189,6 +186,7 @@ class ClientUI:
             self.my_id = msg.get("client_id")
             self.role = msg.get("role")
             self.welcome = msg.get("message", "")
+            self.welcome_dims = msg.get("dims")
             self.screen_name = SCREEN_GAME
             self.say(self.welcome, 4)
         elif kind == protocol.CLIENTS:
@@ -236,22 +234,96 @@ class ClientUI:
     def my_turn(self):
         return (self.state or {}).get("current_turn") == self.my_id
 
-    def can_click(self, row, col):
+    @property
+    def dims(self):
+        """Board shape the server is playing: (rows, cols), or (layers, ...)."""
+        shape = (self.state or {}).get("dims") or self.welcome_dims
+        return tuple(shape) if shape else (config.GRID_SIZE, config.GRID_SIZE)
+
+    @property
+    def is_3d(self):
+        return len(self.dims) == 3
+
+    @property
+    def mode(self):
+        return (self.state or {}).get("mode", config.DEFAULT_MODE)
+
+    @property
+    def flags(self):
+        """Markers, keyed by slot: the value is whoever planted it."""
+        return {tuple(f["cell"]): f["by"]
+                for f in (self.state or {}).get("flags", [])}
+
+    def board_cells(self):
+        if self.is_3d:
+            layers, rows, cols = self.dims
+            return [(l, r, c) for l in range(layers)
+                    for r in range(rows) for c in range(cols)]
+        rows, cols = self.dims
+        return [(r, c) for r in range(rows) for c in range(cols)]
+
+    def value_at(self, cell):
+        """What the server says is in a slot: None, "bomb", or a number."""
+        board = self.board
+        try:
+            if self.is_3d:
+                layer, row, col = cell
+                return board[layer][row][col]
+            row, col = cell
+            return board[row][col]
+        except (IndexError, KeyError, TypeError):
+            return None
+
+    def _geometry(self):
+        """Slot size and origin for whichever board is in play.
+
+        The cube is laid out as its layers side by side, so the whole board
+        is clickable at once instead of paging through slices.
+        """
+        if self.is_3d:
+            layers, rows, cols = self.dims
+            size, gap, layer_gap = 42, 6, 18
+            layer_w = cols * (size + gap) - gap
+            total = layers * layer_w + (layers - 1) * layer_gap
+            return size, gap, layer_gap, (WIN_W - total) // 2, 300, layer_w
+        rows, cols = self.dims
+        total = cols * (CELL + GAP) - GAP
+        return CELL, GAP, 0, (WIN_W - total) // 2, 232, total
+
+    def cell_rect(self, cell):
+        size, gap, layer_gap, ox, oy, layer_w = self._geometry()
+        if self.is_3d:
+            layer, row, col = cell
+            x = ox + layer * (layer_w + layer_gap) + col * (size + gap)
+        else:
+            row, col = cell
+            x = ox + col * (size + gap)
+        return pygame.Rect(x, oy + row * (size + gap), size, size)
+
+    def board_bottom(self):
+        size, gap, _, _, oy, _ = self._geometry()
+        return oy + self.dims[-2] * (size + gap) - gap
+
+    def can_click(self, cell):
         return (self.role == "player"
                 and self.phase == game_rules.PHASE_PLAYING
                 and self.my_turn
-                and self.board and self.board[row][col] is None)
-
-    def cell_rect(self, row, col):
-        return pygame.Rect(self.grid_x + col * (CELL + GAP),
-                           self.grid_y + row * (CELL + GAP), CELL, CELL)
+                and self.value_at(cell) is None
+                and self.flags.get(cell) != self.my_id)
 
     def cell_at(self, pos):
-        for r in range(config.GRID_SIZE):
-            for c in range(config.GRID_SIZE):
-                if self.cell_rect(r, c).collidepoint(pos):
-                    return r, c
+        for cell in self.board_cells():
+            if self.cell_rect(cell).collidepoint(pos):
+                return cell
         return None
+
+    def _send_cell(self, msg_type, cell):
+        if self.is_3d:
+            layer, row, col = cell
+            self.net.send(msg_type, layer=layer, row=row, col=col)
+        else:
+            row, col = cell
+            self.net.send(msg_type, row=row, col=col)
 
     # ------------------------------------------------------------------
     # main loop
@@ -295,10 +367,11 @@ class ClientUI:
             self.nickname += event.unicode
 
     def _on_game_event(self, event):
-        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button not in (1, 3):
             return
         if self.match_end is not None:
-            if self.rematch_rect.collidepoint(event.pos) and not self.voted_rematch:
+            if (event.button == 1 and not self.voted_rematch
+                    and self.rematch_rect.collidepoint(event.pos)):
                 if self.role == "player":
                     self.net.send(protocol.REMATCH)
                     self.voted_rematch = True
@@ -306,9 +379,18 @@ class ClientUI:
         hit = self.cell_at(event.pos)
         if hit is None:
             return
-        row, col = hit
-        if self.can_click(row, col):
-            self.net.send(protocol.PICK, row=row, col=col)
+
+        if event.button == 3:
+            # Right-click marks a slot.  A marker only blocks the player who
+            # planted it, so it is a note to yourself, not a wall.
+            if self.role == "player" and self.value_at(hit) is None:
+                self._send_cell(protocol.FLAG, hit)
+            return
+
+        if self.can_click(hit):
+            self._send_cell(protocol.PICK, hit)
+        elif self.flags.get(hit) == self.my_id:
+            self.say("Right-click to lift your flag first")
         elif self.role != "player":
             self.say("You are watching this match")
         elif self.phase != game_rules.PHASE_PLAYING:
@@ -377,7 +459,11 @@ class ClientUI:
                   ACCENT, center=True)
 
     def _draw_game(self):
-        self.text("FIND MY MINES", (WIN_W // 2, 26), self.f_title, TEXT, center=True)
+        self.text("FIND MY MINES", (WIN_W // 2, 22), self.f_title, TEXT, center=True)
+        label = (self.state or {}).get("mode_label")
+        if label:
+            self.text(label.upper(), (WIN_W // 2, 66), self.f_small,
+                      ACCENT, center=True)
         self._draw_clock()
         self._draw_scoreboard()
         self._draw_board()
@@ -396,7 +482,12 @@ class ClientUI:
     def _draw_scoreboard(self):
         """Both names and scores, the active player highlighted."""
         players = self.players
-        slots = [(self.grid_x, "left"), (self.grid_x + self.grid_w, "right")]
+        # the two names bracket the board, whatever shape it is
+        _, _, layer_gap, ox, _, layer_w = self._geometry()
+        width = layer_w
+        if self.is_3d:
+            width = self.dims[0] * layer_w + (self.dims[0] - 1) * layer_gap
+        slots = [(ox, "left"), (ox + width, "right")]
         current = (self.state or {}).get("current_turn")
         for index, (x, side) in enumerate(slots):
             if index < len(players):
@@ -423,28 +514,49 @@ class ClientUI:
                                       rect.width, 3), border_radius=2)
 
     def _draw_board(self):
-        board = self.board
         mouse = pygame.mouse.get_pos()
-        for r in range(config.GRID_SIZE):
-            for c in range(config.GRID_SIZE):
-                rect = self.cell_rect(r, c)
-                value = board[r][c] if board else None
-                if value is None:
-                    clickable = self.can_click(r, c) and self.match_end is None
-                    hot = clickable and rect.collidepoint(mouse)
-                    pygame.draw.rect(self.screen, COVERED_HOVER if hot else COVERED,
-                                     rect, border_radius=8)
-                    if clickable:
-                        pygame.draw.rect(self.screen, ACCENT if hot else LINE,
-                                         rect, width=2, border_radius=8)
-                elif value == game_rules.BOMB:
-                    pygame.draw.rect(self.screen, BOMB_CELL, rect, border_radius=8)
-                    self._draw_bomb(rect)
-                else:
-                    pygame.draw.rect(self.screen, OPENED, rect, border_radius=8)
-                    pygame.draw.rect(self.screen, LINE, rect, width=1, border_radius=8)
-                    self.text(value, rect.center, self.f_cell,
-                              DIGIT_COLOURS.get(value, TEXT), center=True)
+        flags = self.flags
+        radius = 6 if self.is_3d else 8
+        font = self.f_body if self.is_3d else self.f_cell
+
+        if self.is_3d:
+            size, gap, layer_gap, ox, oy, layer_w = self._geometry()
+            for layer in range(self.dims[0]):
+                x = ox + layer * (layer_w + layer_gap)
+                self.text("layer %d" % layer, (x + layer_w // 2, oy - 24),
+                          self.f_small, MUTED, center=True)
+
+        for cell in self.board_cells():
+            rect = self.cell_rect(cell)
+            value = self.value_at(cell)
+            if value is None:
+                clickable = self.can_click(cell) and self.match_end is None
+                hot = clickable and rect.collidepoint(mouse)
+                pygame.draw.rect(self.screen, COVERED_HOVER if hot else COVERED,
+                                 rect, border_radius=radius)
+                if clickable:
+                    pygame.draw.rect(self.screen, ACCENT if hot else LINE,
+                                     rect, width=2, border_radius=radius)
+                if cell in flags:
+                    self._draw_flag(rect, flags[cell] == self.my_id)
+            elif value == game_rules.BOMB:
+                pygame.draw.rect(self.screen, BOMB_CELL, rect, border_radius=radius)
+                self._draw_bomb(rect)
+            else:
+                pygame.draw.rect(self.screen, OPENED, rect, border_radius=radius)
+                pygame.draw.rect(self.screen, LINE, rect, width=1,
+                                 border_radius=radius)
+                self.text(value, rect.center, font,
+                          DIGIT_COLOURS.get(value, TEXT), center=True)
+
+    def _draw_flag(self, rect, mine):
+        """A little pennant.  Yours is bright; your opponent's is muted."""
+        colour = WARN if mine else MUTED
+        cx, cy = rect.center
+        pole_x = cx - 5
+        pygame.draw.line(self.screen, colour, (pole_x, cy - 11), (pole_x, cy + 11), 2)
+        pygame.draw.polygon(self.screen, colour, [
+            (pole_x + 1, cy - 11), (pole_x + 13, cy - 6), (pole_x + 1, cy - 1)])
 
     def _draw_bomb(self, rect):
         cx, cy = rect.center
@@ -455,7 +567,7 @@ class ClientUI:
         pygame.draw.circle(self.screen, (255, 230, 230), (cx - 5, cy - 5), 4)
 
     def _draw_status(self):
-        y = self.grid_y + self.grid_w + 24
+        y = self.board_bottom() + 28
         if self.role != "player":
             msg, colour = "You are watching this match", ACCENT
         elif self.phase == game_rules.PHASE_WAITING:
@@ -463,17 +575,26 @@ class ClientUI:
         elif self.phase == game_rules.PHASE_ENDED:
             msg, colour = "Match finished", WARN
         elif self.my_turn:
-            msg, colour = "Your turn - find a bomb!", GOOD
+            if self.mode == game_rules.MODE_SWEEPER:
+                msg = "Your turn - open safe ground, avoid the bombs!"
+            else:
+                msg = "Your turn - find a bomb!"
+            colour = GOOD
         else:
             others = [p["name"] for p in self.players if p["id"] != self.my_id]
             msg = "Waiting for %s..." % (others[0] if others else "the other player")
             colour = MUTED
         self.text(msg, (WIN_W // 2, y), self.f_head, colour, center=True)
 
-        bombs = (self.state or {}).get("bombs_left")
-        total = (self.state or {}).get("bombs_total")
+        state = self.state or {}
+        if self.mode == game_rules.MODE_SWEEPER:
+            bombs, total = state.get("safe_left"), None
+            caption = "safe slots left  %d" % (bombs or 0)
+        else:
+            bombs, total = state.get("bombs_left"), state.get("bombs_total")
+            caption = "bombs left  %s / %s" % (bombs, total)
         if bombs is not None:
-            self.text("bombs left  %d / %d" % (bombs, total),
+            self.text(caption,
                       (WIN_W // 2, y + 32), self.f_small, MUTED, center=True)
 
     def _draw_online(self):

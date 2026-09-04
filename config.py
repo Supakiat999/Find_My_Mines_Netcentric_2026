@@ -21,6 +21,17 @@ BOMB_COUNT = 11
 TURN_SECONDS = 10
 MAX_PLAYERS = 2
 
+# --- Game modes --------------------------------------------------------
+# The mode ids live in game.py, next to the rules they drive.  "classic" is
+# the game the assignment asks for; the others are extra modes chosen from
+# the server console.
+DEFAULT_MODE = "classic"
+
+# The cube mode plays in three dimensions instead of on a flat grid.  19
+# bombs in 64 slots keeps roughly the density of the flat board's 11 in 36.
+GRID_3D = (4, 4, 4)
+BOMB_COUNT_3D = 19
+
 # The brief says a player who finds a bomb "continues their turn until time
 # runs out".  We read that as: the countdown keeps running, it is not
 # restarted.  Flip this to True if it should restart on every bomb.

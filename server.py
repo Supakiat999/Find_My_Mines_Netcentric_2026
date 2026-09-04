@@ -28,7 +28,7 @@ import config
 import game as game_rules
 import protocol
 
-WIN_W, WIN_H = 940, 660
+WIN_W, WIN_H = 940, 720
 FPS = 30
 
 # palette
@@ -275,8 +275,13 @@ class Server:
                    for pid in g.players]
         return {
             "phase": g.phase,
+            "mode": g.mode,
+            "mode_label": game_rules.MODE_LABELS.get(g.mode, g.mode),
+            "dims": list(g.dims),             # (rows, cols) or (layers, rows, cols)
             "grid_size": g.grid_size,
             "board": g.board_view(),          # never reveals unfound bombs
+            "flags": g.flag_view(),
+            "safe_left": g.safe_left,
             "players": players,
             "current_turn": g.current_turn,
             "bombs_left": g.bombs_left,
@@ -351,6 +356,23 @@ class Server:
         else:
             self.say("Match over")
 
+    def set_mode(self, mode):
+        """Mode buttons on the console.  The server owns which game is played,
+        so a change deals a fresh board for everyone at once."""
+        if mode == self.game.mode:
+            return
+        self.game.set_mode(mode)
+        self.game.reset_scores()
+        self.rematch_votes.clear()
+        self._stop_turn_clock()
+        self.first_match_done = False
+        self._reseat()
+        self.say("Mode: %s" % game_rules.MODE_LABELS.get(mode, mode))
+        self._broadcast(protocol.SERVER_RESET)
+        self.push_clients()
+        self._maybe_autostart()
+        self.push_state()
+
     def reset_all(self):
         """The Reset button: clear the board and both scores, then re-deal."""
         self.game.full_reset()
@@ -393,6 +415,8 @@ class Server:
             self._on_join(rec, msg)
         elif kind == protocol.PICK:
             self._on_pick(rec, msg)
+        elif kind == protocol.FLAG:
+            self._on_flag(rec, msg)
         elif kind == protocol.REMATCH:
             self._on_rematch(rec)
 
@@ -416,6 +440,8 @@ class Server:
                    client_id=rec.id, role=rec.role,
                    message="Welcome, %s." % rec.name,
                    grid_size=self.game.grid_size,
+                   dims=list(self.game.dims),
+                   mode=self.game.mode,
                    bombs_total=self.game.bomb_count,
                    turn_seconds=config.TURN_SECONDS)
         self.say("%s joined as %s (%d online)"
@@ -424,23 +450,45 @@ class Server:
         self._maybe_autostart()
         self.push_state()
 
+    def _cell_from(self, msg):
+        """Coordinates off the wire, shaped for the mode in play."""
+        row, col = msg.get("row", -1), msg.get("col", -1)
+        if self.game.is_3d:
+            return (msg.get("layer", 0), row, col)
+        return (row, col)
+
     def _on_pick(self, rec, msg):
-        result = self.game.pick(rec.id, msg.get("row", -1), msg.get("col", -1))
+        cell = self._cell_from(msg)
+        result = self.game.pick(rec.id, cell)
         if not result.get("ok"):
             self._send(rec, protocol.ERROR, message=result.get("reason", "invalid"))
             return
-        where = "(%s,%s)" % (msg.get("row"), msg.get("col"))
+        where = "(%s)" % ",".join(str(v) for v in cell)
         if result["is_bomb"]:
-            self.say("%s found a BOMB at %s - keeps the turn" % (rec.name, where))
-            if config.RESET_TIMER_ON_BOMB and not result["match_over"]:
-                self._start_turn_clock()
+            if self.game.mode == game_rules.MODE_SWEEPER:
+                self.say("%s hit a BOMB at %s - turn lost" % (rec.name, where))
+            else:
+                self.say("%s found a BOMB at %s - keeps the turn"
+                         % (rec.name, where))
+                if config.RESET_TIMER_ON_BOMB and not result["match_over"]:
+                    self._start_turn_clock()
+        elif result["opened"] > 1:
+            self.say("%s cleared %d slots from %s"
+                     % (rec.name, result["opened"], where))
         else:
-            self.say("%s opened %s - %d nearby" % (rec.name, where, result["value"]))
+            self.say("%s opened %s - %s nearby"
+                     % (rec.name, where, result["value"]))
         if result["match_over"]:
             self._end_match()
         elif result["turn_changed"]:
             self._start_turn_clock()
         self.push_state()
+
+    def _on_flag(self, rec, msg):
+        """Markers are advisory - they only block the player who set them."""
+        if rec.role == "player" and self.game.toggle_flag(rec.id,
+                                                          self._cell_from(msg)):
+            self.push_state()
 
     def _on_rematch(self, rec):
         if self.game.phase != game_rules.PHASE_ENDED or rec.role != "player":
@@ -518,6 +566,7 @@ class ServerUI:
         self.f_cell = self._font(20, bold=True)
         self.reset_rect = pygame.Rect(WIN_W - 200, 22, 168, 44)
         self.reset_hover = False
+        self.mode_rects = self._mode_rects()
 
     @staticmethod
     def _font(size, bold=False):
@@ -529,9 +578,14 @@ class ServerUI:
         return pygame.font.Font(None, size)
 
     # -- small drawing helpers -----------------------------------------
-    def text(self, s, pos, font=None, color=TEXT):
+    def text(self, s, pos, font=None, color=TEXT, center=False):
         surf = (font or self.f_body).render(str(s), True, color)
-        self.screen.blit(surf, pos)
+        rect = surf.get_rect()
+        if center:
+            rect.center = pos
+        else:
+            rect.topleft = pos
+        self.screen.blit(surf, rect)
         return surf.get_width()
 
     def panel(self, rect, title=None):
@@ -552,6 +606,11 @@ class ServerUI:
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if self.reset_rect.collidepoint(event.pos):
                         srv.reset_all()
+                    else:
+                        for mode, box in self.mode_rects:
+                            if box.collidepoint(event.pos):
+                                srv.set_mode(mode)
+                                break
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     srv.running = False
 
@@ -573,12 +632,38 @@ class ServerUI:
                   (34 + width + 10, 54), self.f_head, ACCENT)
         self._draw_reset_button()
 
-        self._draw_clients(pygame.Rect(32, 92, 400, 300))
-        self._draw_match(pygame.Rect(452, 92, 456, 300))
-        self._draw_board(pygame.Rect(452, 408, 456, 220))
-        self._draw_log(pygame.Rect(32, 408, 400, 220))
+        self._draw_modes()
+        self._draw_clients(pygame.Rect(32, 146, 400, 288))
+        self._draw_match(pygame.Rect(452, 146, 456, 288))
+        self._draw_board(pygame.Rect(452, 450, 456, 246))
+        self._draw_log(pygame.Rect(32, 450, 400, 246))
 
         pygame.display.flip()
+
+    def _mode_rects(self):
+        """One button per mode, laid out left to right under the title."""
+        rects = []
+        x, width = 32, 132
+        for mode in game_rules.MODES:
+            rects.append((mode, pygame.Rect(x, 100, width, 34)))
+            x += width + 8
+        return rects
+
+    def _draw_modes(self):
+        mouse = pygame.mouse.get_pos()
+        current = self.server.game.mode
+        for mode, box in self.mode_rects:
+            active = mode == current
+            hot = box.collidepoint(mouse)
+            fill = (37, 99, 235) if active else (PANEL_2 if hot else PANEL)
+            pygame.draw.rect(self.screen, fill, box, border_radius=8)
+            pygame.draw.rect(self.screen, ACCENT if active else LINE, box,
+                             width=1, border_radius=8)
+            label = game_rules.MODE_LABELS.get(mode, mode)
+            self.text(label, box.center, self.f_body,
+                      (235, 244, 255) if active else MUTED, center=True)
+        blurb = game_rules.MODE_BLURBS.get(current, "")
+        self.text(blurb, (32 + 4 * 140 + 8, 110), self.f_small, MUTED)
 
     def _draw_reset_button(self):
         colour = (185, 60, 60) if self.reset_hover else (150, 48, 48)
@@ -592,7 +677,7 @@ class ServerUI:
         srv = self.server
         joined = srv._joined_clients()
         self.panel(rect, "CONNECTED CLIENTS")
-        self.text("online", (rect.right - 66, rect.y + 20), self.f_small, MUTED)
+        self.text("online", (rect.right - 84, rect.y + 20), self.f_small, MUTED)
         self.text(str(len(joined)), (rect.right - 34, rect.y + 6),
                   self.f_title, ACCENT)
 
@@ -643,9 +728,16 @@ class ServerUI:
         self.text("00:00:%02d" % left, (rect.x + 200, rect.y + 98),
                   self.f_title, colour)
 
-        self.text("bombs left", (rect.x + 16, rect.y + 150), self.f_small, MUTED)
-        self.text("%d / %d" % (g.bombs_left, g.bomb_count),
-                  (rect.x + 16, rect.y + 168), self.f_head, TEXT)
+        if g.mode == game_rules.MODE_SWEEPER:
+            # Bombs are the hazard here, so the finish line is safe ground.
+            self.text("safe slots left", (rect.x + 16, rect.y + 150),
+                      self.f_small, MUTED)
+            self.text("%d / %d" % (g.safe_left, g.cell_count - g.bomb_count),
+                      (rect.x + 16, rect.y + 168), self.f_head, TEXT)
+        else:
+            self.text("bombs left", (rect.x + 16, rect.y + 150), self.f_small, MUTED)
+            self.text("%d / %d" % (g.bombs_left, g.bomb_count),
+                      (rect.x + 16, rect.y + 168), self.f_head, TEXT)
 
         if g.phase == game_rules.PHASE_ENDED:
             self.text("rematch votes", (rect.x + 200, rect.y + 150),
@@ -665,32 +757,48 @@ class ServerUI:
         g = self.server.game
         self.panel(rect, "BOARD  (server view)")
         view = g.board_view(reveal_all=True)
-        size, gap = 28, 4
-        n = g.grid_size
-        ox, oy = rect.x + 16, rect.y + 44
-        for r in range(n):
-            for c in range(n):
+        if g.is_3d:
+            # The cube is drawn as its layers, side by side, so the whole
+            # board is visible at once rather than one slice at a time.
+            size, gap = 20, 3
+            span = len(view[0][0]) * (size + gap)
+            for index, layer in enumerate(view):
+                x = rect.x + 16 + index * (span + 16)
+                self.text("layer %d" % index, (x, rect.y + 42), self.f_small, MUTED)
+                self._draw_slots(layer, x, rect.y + 62, size, gap)
+            self._draw_legend(rect.x + 16, rect.y + 74 + span)
+        else:
+            size, gap = 28, 4
+            self._draw_slots(view, rect.x + 16, rect.y + 44, size, gap)
+            self._draw_legend(rect.x + 16 + g.grid_size * (size + gap) + 20,
+                              rect.y + 48)
+
+    def _draw_slots(self, rows, ox, oy, size, gap):
+        font = self.f_cell if size >= 24 else self.f_small
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
                 cell = pygame.Rect(ox + c * (size + gap), oy + r * (size + gap),
                                    size, size)
-                value = view[r][c]
                 if value is None:
                     pygame.draw.rect(self.screen, HIDDEN_CELL, cell, border_radius=4)
                 elif value == game_rules.HIDDEN_BOMB:
                     pygame.draw.rect(self.screen, HIDDEN_CELL, cell, border_radius=4)
-                    pygame.draw.circle(self.screen, (120, 70, 70), cell.center, 5)
+                    pygame.draw.circle(self.screen, (120, 70, 70), cell.center,
+                                       max(3, size // 6))
                 elif value == game_rules.BOMB:
                     pygame.draw.rect(self.screen, (150, 48, 48), cell, border_radius=4)
-                    pygame.draw.circle(self.screen, (255, 220, 220), cell.center, 6)
+                    pygame.draw.circle(self.screen, (255, 220, 220), cell.center,
+                                       max(4, size // 5))
                 else:
                     pygame.draw.rect(self.screen, PANEL_2, cell, border_radius=4)
-                    label = self.f_cell.render(str(value), True,
-                                               MUTED if value == 0 else TEXT)
+                    label = font.render(str(value), True,
+                                        MUTED if value == 0 else TEXT)
                     self.screen.blit(label, label.get_rect(center=cell.center))
 
-        legend_x = ox + n * (size + gap) + 20
-        self.text("found bomb", (legend_x, oy + 4), self.f_small, BAD)
-        self.text("hidden bomb", (legend_x, oy + 28), self.f_small, MUTED)
-        self.text("opened slot", (legend_x, oy + 52), self.f_small, TEXT)
+    def _draw_legend(self, x, y):
+        self.text("found bomb", (x, y), self.f_small, BAD)
+        self.text("hidden bomb", (x, y + 24), self.f_small, MUTED)
+        self.text("opened slot", (x, y + 48), self.f_small, TEXT)
 
     def _draw_log(self, rect):
         self.panel(rect, "ACTIVITY")
