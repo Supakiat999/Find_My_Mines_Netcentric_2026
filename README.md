@@ -56,6 +56,9 @@ git checkout enhanced
 git checkout main
 ```
 
+**[CHANGELOG.md](CHANGELOG.md)** explains every improvement and every bug fixed,
+in plain language.
+
 ---
 
 ## Files

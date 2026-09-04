@@ -84,14 +84,15 @@ Either edit `config.py`:
 SERVER_HOST = "192.168.1.14"
 ```
 
-...or skip the file entirely and pass the address when you start the client:
+On the **`enhanced`** branch you can skip the file entirely and pass the
+address when you start the client instead:
 
 ```bash
 python client.py 192.168.1.14
 ```
 
-Both do the same thing. The argument is the safer one when the server has
-just moved to a new address, because there is no file to forget to save.
+That option does not exist on `main` - there, edit `config.py` as above.
+See [CHANGELOG.md](CHANGELOG.md) for what separates the two branches.
 
 ### Step 4 — Play
 
@@ -109,8 +110,8 @@ the other runs only a client.
 
 > 1. Install Python 3, then run `pip install -r requirements.txt`
 > 2. Download the code: https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026
-> 3. Run `python client.py <my IP>` — type a nickname, press Enter
->    (or set `SERVER_HOST` in `config.py` and just run `python client.py`)
+> 3. Open `config.py` and set `SERVER_HOST = "<my IP>"`, then save
+> 4. Run `python client.py` — type a nickname, press Enter
 > 5. You must be on the same Wi-Fi as me. If it will not connect, join my phone
 >    hotspot and I will send the new IP.
 
