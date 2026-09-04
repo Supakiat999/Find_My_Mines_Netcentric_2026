@@ -16,7 +16,6 @@ Run:  python client.py
 
 import queue
 import socket
-import sys
 import threading
 
 import pygame
@@ -556,18 +555,6 @@ class ClientUI:
 
 
 def main():
-    """Start the client.
-
-    The address normally comes from config.py, so nobody has to type one.
-    An optional argument overrides it - handy when the server has moved to
-    a new address and editing the file would be one more thing to get
-    wrong:  python client.py 192.168.1.14
-    """
-    args = [a for a in sys.argv[1:] if a.strip()]
-    if args:
-        config.SERVER_HOST = args[0].strip()
-    if len(args) > 1 and args[1].strip().isdigit():
-        config.SERVER_PORT = int(args[1])
     ClientUI().run()
 
 
