@@ -139,10 +139,67 @@ class Server:
 
     def _client_loop(self, client_id, sock):
         """Blocking reader for one client; runs on its own thread."""
+        if self._answered_browser(client_id, sock):
+            return
         reader = protocol.MessageReader(sock)
         for msg in reader.messages():
             self.events.put((client_id, msg))
         self.events.put((client_id, {"type": "__disconnected__"}))
+
+    def _answered_browser(self, client_id, sock):
+        """Reply to a browser instead of treating it as a game client.
+
+        Opening http://<server address>/ from a phone or another laptop is
+        the quickest way to prove the network path works, before anyone
+        edits config.py.  We peek at the first bytes, so a real client's
+        JOIN is left untouched in the buffer for the reader below.
+        """
+        try:
+            head = sock.recv(8, socket.MSG_PEEK)
+        except OSError:
+            return False
+        if not (head.startswith(b"GET") or head.startswith(b"HEAD")):
+            return False
+
+        rec = self._client(client_id)
+        seen_by = rec.addr[0] if rec else "?"
+        body = (
+            "<!doctype html><meta charset=utf-8>"
+            "<title>Find My Mines</title>"
+            "<body style=\"font:16px system-ui;background:#111621;color:#e2e8f0;"
+            "text-align:center;padding:60px\">"
+            "<h1 style=\"color:#34d399\">Connection works</h1>"
+            "<p>You reached the Find My Mines server at "
+            "<b>%s:%d</b>.</p>"
+            "<p>Your address here is <b>%s</b>.</p>"
+            "<p style=\"color:#8a98af\">Now set SERVER_HOST in config.py to "
+            "%s and run <b>python client.py</b>.</p>"
+            % (self.lan_ip, config.SERVER_PORT, seen_by, self.lan_ip)
+        ).encode("utf-8")
+        crlf = "\r\n"
+        headers = (
+            "HTTP/1.1 200 OK" + crlf
+            + "Content-Type: text/html; charset=utf-8" + crlf
+            + "Content-Length: " + str(len(body)) + crlf
+            + "Connection: close" + crlf + crlf
+        ).encode("ascii")
+        try:
+            # Consume the request we only peeked at.  Closing a socket that
+            # still holds unread data makes Windows send RST, which would
+            # throw our reply away before the browser could read it.
+            sock.settimeout(0.5)
+            sock.recv(65536)
+        except OSError:
+            pass
+        try:
+            sock.settimeout(None)
+            sock.sendall(headers + body)
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        self.say("Reachability check from %s - answered OK" % seen_by)
+        self.events.put((client_id, {"type": "__disconnected__"}))
+        return True
 
     def _drop_client(self, client_id):
         with self.clients_lock:
