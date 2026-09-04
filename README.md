@@ -30,6 +30,7 @@ per bomb; the match ends when all 11 are found.
 | `protocol.py` | Newline-delimited JSON framing over TCP, plus a reader that reassembles messages split across packets. |
 | `game.py` | Pure game rules — bomb placement, neighbour counts, turn order, scoring. No sockets, no GUI. |
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
+| `ARCHITECTURE.md` | How the system works layer by layer, from Wi-Fi frames up to the game rules — written for presenting in class. |
 
 ---
 
