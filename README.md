@@ -26,40 +26,27 @@ Step-by-step setup, including the two-computer demo, is in
 
 ---
 
-## Versions
+## Versions - pick one
 
-Two branches, both playable. The game is identical in each - same rules, same
-screens, same wire protocol - so a client from one branch talks happily to a
-server from the other. They differ only in how you *find and reach* the server.
+Three versions live on three branches. **The game itself is identical in all
+three** - same rules, same screens, same wire protocol - so a client from one
+branch plays perfectly well against a server from another. What differs is what
+is built around the game.
 
-| Branch | Tag | What it is |
-|---|---|---|
-| **`main`** | `v1-demo` | The version demonstrated in class. The game and nothing else. |
-| **`enhanced`** | `v2-enhanced` | The same game plus four connection aids (below). |
-| **`kk`** | `v3-kk` | Everything in `enhanced`, plus three extra game modes and a per-match score reset. |
+| Version | Branch | Snapshot | What it is |
+|---|---|---|---|
+| **Classic** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) | [`v1-demo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v1-demo) | The version demonstrated in class. The assignment and nothing else. |
+| **Enhanced** | [`enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/enhanced) | [`v2-enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v2-enhanced) | Classic plus four aids for connecting across machines. |
+| **KK** | [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) | [`v3-kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v3-kk) | Enhanced plus five game modes, a custom game, and per-match scoring. |
 
-What `enhanced` adds, all of it about getting connected:
-
-1. The server **re-checks its own IP** every few seconds and shows it in the
-   header, so it never advertises an address it has stopped using.
-2. If the network drops, it **keeps showing the last good address** instead of
-   falling back to `127.0.0.1`.
-3. It **answers a browser** at `http://<server address>:55555` with a
-   "Connection works" page - a five-second way to prove the network is fine
-   before anyone edits a file. It takes no player seat and cannot disturb a
-   match in progress.
-4. The client accepts the address as an argument: **`python client.py <ip>`**,
-   so nobody has to edit `config.py`. The default still comes from the source.
-
-Switching between them:
+Click a branch above to browse it on GitHub, or switch locally:
 
 ```bash
-git checkout enhanced
-git checkout main
+git checkout kk
 ```
 
-**[CHANGELOG.md](CHANGELOG.md)** explains every improvement and every bug fixed,
-in plain language.
+You are reading the **kk** branch.  The front page on
+[`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026#readme) describes every version side by side.
 
 ---
 
