@@ -12,52 +12,89 @@ per bomb; the match ends when all 11 are found.
 
 ---
 
+## Versions - pick one
+
+Three versions live on three branches. **The game itself is identical in all
+three** - same rules, same screens, same wire protocol - so a client from one
+branch plays perfectly well against a server from another. What differs is what
+is built around the game.
+
+| Version | Branch | Snapshot | What it is |
+|---|---|---|---|
+| **Classic** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) | [`v1-demo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v1-demo) | The version demonstrated in class. The assignment and nothing else. |
+| **Enhanced** | [`enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/enhanced) | [`v2-enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v2-enhanced) | Classic plus four aids for connecting across machines. |
+| **KK** | [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) | [`v3-kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v3-kk) | Enhanced plus five game modes, a custom game, and per-match scoring. |
+
+Click a branch above to browse it here on GitHub, or switch locally:
+
+```bash
+git checkout kk
+```
+
+You are reading the **Classic** branch. Everything below this section describes
+that version.
+
+---
+
+## What the KK version has
+
+The newest version, on the [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) branch. It contains
+everything in Classic and Enhanced, plus:
+
+### Five game modes
+
+Chosen from buttons in the game window - either player can switch, and the
+board is re-dealt for everyone at once. **Classic is the default, and its rules
+are untouched**, so the graded game is never altered by the extras.
+
+| Mode | Board | How it plays |
+|---|---|---|
+| **Classic** | 6x6, 11 bombs | Find bombs, one point each. A bomb keeps your turn, an empty slot passes it. |
+| **Radius 2** | 6x6, 11 bombs | Hints count **2** for every bomb touching the slot and **1** for every bomb a ring further out, so each bomb influences 24 slots instead of 8 and hints can run past 8. |
+| **Minesweeper** | 6x6, 11 bombs | Inverted: bombs are the hazard. Safe ground scores a point per slot and keeps your turn, a zero cascades open, and a bomb ends your turn for nothing. |
+| **3D Cube** | 4x4x4, 19 bombs | The hunt in three dimensions - up to **26** neighbours per slot. All four layers are drawn side by side, so the whole cube is clickable at once. |
+| **Custom** | you decide | Board size, bomb count, seconds per turn, flat or cube, hint style, and whether bombs are points or hazards - any combination. |
+
+### A custom game
+
+Picking **Custom** opens a settings panel. Either player can change any of it
+mid-session, and the board is re-dealt on each change.
+
+| Setting | Range |
+|---|---|
+| Board size | 4-10 flat, 3-5 as a cube |
+| Bombs | 1 up to 45% of the slots |
+| Seconds per turn | 5 to 60 |
+| Shape | Flat grid or cube |
+| Hints | Touching bombs only, or the two-ring 2/1 weighting |
+| Bombs are | Points to collect, or hazards to avoid |
+
+Every value is clamped on the server, so a client cannot ask for a 500x500
+board or more bombs than there are slots.
+
+### Also in KK
+
+- **Scores reset every match**, so a rematch is a fresh contest rather than a
+  continuation. Classic and Enhanced carry them over.
+- **Flags** - right-click marks a slot in any mode. A flag blocks only the
+  player who planted it, so it cannot be used to wall the board off.
+- The four connection aids inherited from Enhanced: a **live server address**,
+  a **browser reachability page**, a loopback guard, and `python client.py <ip>`.
+
+Full detail, including the bugs fixed along the way, is in
+**[CHANGELOG.md](CHANGELOG.md)**. Setup and troubleshooting is in
+**[HOW_TO_RUN.md](HOW_TO_RUN.md)**, and a layer-by-layer walkthrough of how the
+whole thing works is in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+---
+
 ## Status
 
 | Part | State |
 |---|---|
-| Server — `config.py` · `protocol.py` · `game.py` · `server.py` | Done, verified by a headless socket test |
-| Client — `client.py` | Done, verified by two clients playing a full match |
-| Extra features | Not started |
-
-Step-by-step setup, including the two-computer demo, is in
-**[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
-
----
-
-## Versions
-
-Two branches, both playable. The game is identical in each - same rules, same
-screens, same wire protocol - so a client from one branch talks happily to a
-server from the other. They differ only in how you *find and reach* the server.
-
-| Branch | Tag | What it is |
-|---|---|---|
-| **`main`** | `v1-demo` | The version demonstrated in class. The game and nothing else. |
-| **`enhanced`** | `v2-enhanced` | The same game plus four connection aids (below). |
-
-What `enhanced` adds, all of it about getting connected:
-
-1. The server **re-checks its own IP** every few seconds and shows it in the
-   header, so it never advertises an address it has stopped using.
-2. If the network drops, it **keeps showing the last good address** instead of
-   falling back to `127.0.0.1`.
-3. It **answers a browser** at `http://<server address>:55555` with a
-   "Connection works" page - a five-second way to prove the network is fine
-   before anyone edits a file. It takes no player seat and cannot disturb a
-   match in progress.
-4. The client accepts the address as an argument: **`python client.py <ip>`**,
-   so nobody has to edit `config.py`. The default still comes from the source.
-
-Switching between them:
-
-```bash
-git checkout enhanced
-git checkout main
-```
-
-**[CHANGELOG.md](CHANGELOG.md)** explains every improvement and every bug fixed,
-in plain language.
+| Server - `config.py` - `protocol.py` - `game.py` - `server.py` | Done, verified by a headless socket test |
+| Client - `client.py` | Done, verified by two clients playing a full match |
+| Extra features | Done on the [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) branch |
 
 ---
 
