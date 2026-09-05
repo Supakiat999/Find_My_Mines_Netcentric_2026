@@ -5,6 +5,29 @@ two-computer setup the assignment asks for.
 
 ---
 
+## The easy way: double-click a launcher
+
+| You are on | Play | Host the game |
+|---|---|---|
+| Windows | `PLAY-Windows.bat` | `HOST-Windows.bat` |
+| macOS | `PLAY-Mac.command` | `HOST-Mac.command` |
+
+The launcher checks for Python, installs pygame the first time, and asks for
+the server address - press Enter to use the one already in `config.py`. The
+host's launcher just starts the server and shows the address to hand out.
+
+On macOS the executable bit is often lost when a folder is zipped and mailed
+around. If double-clicking does nothing, run this once in Terminal in that
+folder:
+
+```bash
+chmod +x PLAY-Mac.command HOST-Mac.command
+```
+
+The rest of this guide is the manual route, which does the same thing.
+
+---
+
 ## Before anything: install pygame
 
 On **every** computer that will run the game:

@@ -98,6 +98,8 @@ off from your opponent.
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
 | `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
 | `requirements.txt` | The one dependency, pygame. |
+| `PLAY-Windows.bat` / `PLAY-Mac.command` | Double-click launchers for players - check Python, install pygame, ask for the address. |
+| `HOST-Windows.bat` / `HOST-Mac.command` | Double-click launchers that start the server. |
 | `ARCHITECTURE.md` | How the system works layer by layer, from Wi-Fi frames up to the game rules — written for presenting in class. |
 | `HOW_TO_RUN.md` | Setup and troubleshooting, including what to send the other players. |
 
