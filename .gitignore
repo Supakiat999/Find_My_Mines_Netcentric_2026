@@ -4,3 +4,7 @@ __pycache__/
 # files the game writes while running - they belong to whoever is playing
 stats.json
 client_prefs.json
+
+# virtual environment
+.venv/
+

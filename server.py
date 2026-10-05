@@ -347,6 +347,7 @@ class Server:
                 record = self.board.record_of(name)
                 entry["record"] = {k: record[k] for k in
                                    ("wins", "losses", "draws", "points")}
+                entry["elo"] = self.board.get_elo(name, g.mode)
             players.append(entry)
         away = self._away_payload()
         return {
@@ -376,7 +377,7 @@ class Server:
             "bot_seated": self._bot_seated(),
             "away": away,
             "paused": bool(away) and g.phase == game_rules.PHASE_PLAYING,
-            "leaderboard": self.board.top(5),
+            "leaderboard": self.board.top(5, mode=g.mode),
         }
 
     def push_clients(self):
@@ -397,7 +398,7 @@ class Server:
                    turn_seconds=self.game.turn_seconds,
                    bot_level=self.bot_level,
                    chat=list(self.chat),
-                   leaderboard=self.board.top(5))
+                   leaderboard=self.board.top(5, mode=self.game.mode))
 
     # ------------------------------------------------------------------
     # chat
@@ -528,7 +529,14 @@ class Server:
                 outcome = "win" if p["id"] == g.last_winner else "loss"
             results.append({"name": p["name"], "result": outcome,
                             "points": p["score"]})
-        self.board.record_match(results)
+        elo_changes = self.board.record_match(results, mode=g.mode)
+
+        elo_payload = {}
+        for p in players:
+            name = p["name"]
+            if name in elo_changes:
+                elo_payload[p["id"]] = elo_changes[name]
+                elo_payload[name] = elo_changes[name]
 
         if self._bot_seated():
             self.rematch_votes.add(BOT_ID)      # the computer always says yes
@@ -538,8 +546,17 @@ class Server:
             draw=g.last_winner is None,
             players=players,
             stats=detail,
-            leaderboard=self.board.top(5),
+            mode=g.mode,
+            elo_changes=elo_payload,
+            leaderboard=self.board.top(5, mode=g.mode),
         )
+        if elo_changes:
+            parts = []
+            for name, ch in elo_changes.items():
+                sign = "+" if ch["delta"] > 0 else ""
+                parts.append("%s (%s%d -> %d)" % (name, sign, ch["delta"], ch["after"]))
+            self._announce("Elo: " + " | ".join(parts), system=True)
+            self.say("Elo: %s" % " | ".join(parts))
         if g.last_winner is None:
             self.say("Match over - draw")
         elif g.last_winner in names:

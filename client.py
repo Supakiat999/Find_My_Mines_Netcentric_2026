@@ -972,7 +972,14 @@ class ClientUI:
 
     def _draw_hall(self):
         card = self.cards["board"]
-        self._card(card, "HALL OF FAME")
+        mode_label = (self.state or {}).get("mode_label")
+        mode = (self.state or {}).get("mode", "classic")
+        ranked_modes = getattr(config, "ELO_RANKED_MODES", ("classic", "radius2", "sweeper", "cube"))
+        if mode in ranked_modes and mode_label:
+            title = self.fit(("HALL OF FAME - %s" % mode_label).upper(), self.f_card, card.w - 28)
+        else:
+            title = "HALL OF FAME"
+        self._card(card, title)
         if not self.leaderboard:
             self.text("Win a match to get on the board.",
                       (card.x + 14, card.y + 44), self.f_small, MUTED)
@@ -982,10 +989,14 @@ class ClientUI:
             mine = row["name"] == next((p["name"] for p in self.players
                                         if p["id"] == self.my_id), None)
             self.text("%d" % rank, (card.x + 14, y), self.f_small, MUTED)
-            self.text(self.fit(row["name"], self.f_small, 150),
+            self.text(self.fit(row["name"], self.f_small, 130),
                       (card.x + 34, y), self.f_small, GOOD if mine else TEXT)
-            self.text("%dW %dL  %d" % (row["wins"], row["losses"], row["points"]),
-                      (card.right - 14, y), self.f_small, WARN, right=True)
+            elo_val = row.get("elo")
+            if elo_val is not None:
+                stat_str = "%d  %dW %dL" % (elo_val, row["wins"], row["losses"])
+            else:
+                stat_str = "%dW %dL  %d" % (row["wins"], row["losses"], row["points"])
+            self.text(stat_str, (card.right - 14, y), self.f_small, WARN, right=True)
             y += 22
 
     def _chat_lines_wrapped(self, width):
@@ -1288,6 +1299,11 @@ class ClientUI:
                 name = p["name"] + (" (you)" if p["id"] == self.my_id else "")
                 if p["id"] in away:
                     name += " (away)"
+                elo_val = p.get("elo")
+                mode = (self.state or {}).get("mode", "classic")
+                ranked_modes = getattr(config, "ELO_RANKED_MODES", ("classic", "radius2", "sweeper", "cube"))
+                if elo_val is not None and mode in ranked_modes and not p.get("bot"):
+                    name += " [%d]" % elo_val
                 score = p["score"]
                 active = p["id"] == current
                 colour = GOOD if active else (WARN if p["id"] in away else TEXT)
@@ -1523,10 +1539,22 @@ class ClientUI:
 
         left, right = card.x + 30, card.right - 30
         y = card.y + 108
+        elo_changes = end.get("elo_changes", {})
         for p in players:
             label = "%s%s" % (p["name"], "  (you)" if p["id"] == self.my_id else "")
-            self.text(self.fit(label, self.f_head, 360), (left, y), self.f_head, TEXT)
-            self.text(p["score"], (right, y), self.f_head, WARN, right=True)
+            ch = elo_changes.get(p["id"]) or elo_changes.get(str(p["id"])) or elo_changes.get(p["name"])
+            if ch:
+                delta = ch.get("delta", 0)
+                after = ch.get("after", 0)
+                sign = "+" if delta > 0 else ""
+                col = GOOD if delta > 0 else (BAD if delta < 0 else WARN)
+                elo_str = "%s%d ELO (%d)" % (sign, delta, after)
+                self.text(self.fit(label, self.f_head, 240), (left, y), self.f_head, TEXT)
+                self.text(elo_str, (right - 70, y + 2), self.f_small, col, right=True)
+                self.text(p["score"], (right, y), self.f_head, WARN, right=True)
+            else:
+                self.text(self.fit(label, self.f_head, 360), (left, y), self.f_head, TEXT)
+                self.text(p["score"], (right, y), self.f_head, WARN, right=True)
             y += 34
 
         # a small table of how each player did

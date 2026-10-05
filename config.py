@@ -13,7 +13,7 @@ SERVER_HOST = "127.0.0.1"
 # Address the server binds to.  "0.0.0.0" accepts connections from any
 # network interface, which is what lets the second laptop reach us.
 BIND_HOST = "0.0.0.0"
-SERVER_PORT = 55555
+SERVER_PORT = 55550
 
 # --- Game rules --------------------------------------------------------
 GRID_SIZE = 6
@@ -75,3 +75,10 @@ STATS_FILE = "auto"
 # Where the game window remembers your theme and sound choice.  "auto" puts
 # client_prefs.json beside the game; None turns remembering off (tests do this).
 PREFS_FILE = "auto"
+
+# --- Elo Rating System -------------------------------------------------
+ELO_STARTING = 1200                  # Default starting rating
+ELO_K_FACTOR = 32                    # Sensitivity factor
+ELO_MINIMUM = 100                    # Floor rating
+ELO_RANKED_MODES = ("classic", "radius2", "sweeper", "cube")
+
