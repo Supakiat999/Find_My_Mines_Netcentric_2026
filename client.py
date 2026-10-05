@@ -1002,15 +1002,21 @@ class ClientUI:
             mine = row["name"] == next((p["name"] for p in self.players
                                         if p["id"] == self.my_id), None)
             self.text("%d" % rank, (card.x + 14, y), self.f_small, MUTED)
-            self.text(self.fit(row["name"], self.f_small, 110),
-                      (card.x + 34, y), self.f_small, GOOD if mine else TEXT)
             elo_val = row.get("elo")
+            peak_val = row.get("peak_elo")
             tier_name = row.get("tier", "Bronze")
             tier_col = row.get("tier_color", WARN)
             if elo_val is not None:
-                stat_str = "%s %d  %dW %dL" % (tier_name[:4].upper(), elo_val, row["wins"], row["losses"])
+                if peak_val is not None:
+                    stat_str = "%s %d (Pk %d)  %dW %dL" % (tier_name[:4].upper(), elo_val, peak_val, row["wins"], row["losses"])
+                else:
+                    stat_str = "%s %d  %dW %dL" % (tier_name[:4].upper(), elo_val, row["wins"], row["losses"])
             else:
                 stat_str = "%dW %dL  %d" % (row["wins"], row["losses"], row["points"])
+            stat_w = self.f_small.size(stat_str)[0]
+            name_max_w = max(40, (card.right - 14) - stat_w - (card.x + 34) - 6)
+            self.text(self.fit(row["name"], self.f_small, name_max_w),
+                      (card.x + 34, y), self.f_small, GOOD if mine else TEXT)
             self.text(stat_str, (card.right - 14, y), self.f_small, tier_col if elo_val else WARN, right=True)
             y += 22
 

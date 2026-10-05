@@ -20,21 +20,21 @@ per bomb; the match ends when all 11 are found.
 | Client — `client.py` | Done, verified by two clients playing a full match |
 | Connection aids | Live server address, browser check, address argument |
 | Game modes | Classic, Radius 2, Minesweeper, 3D Cube, Custom |
-| AI, chat, stats, sound, themes, reconnect (this branch) | Done, 83 automated checks |
+| AI, chat, stats, sound, themes, reconnect | Done, 83 automated checks |
+| Elo rating & rank tiers (this branch) | Done, 6 tiers up to Master 2000+, placement K=64, streak bonuses |
 
 Step-by-step setup, including the two-computer demo, is in
-**[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
+**[HOW_TO_RUN.md](HOW_TO_RUN.md)**. For full details on the ranking formulas and tiers, see **[ELO.md](ELO.md)**.
 
 ---
 
 ## Versions - pick one
 
-Four versions, each containing everything in the one before it. `main` carries
-the newest (KK Plus); the version demonstrated in class is the `v1-demo`
+Five versions, each containing everything in the one before it. `main` carries
+KK Plus; the version demonstrated in class is the `v1-demo`
 snapshot. The core game - the rules, the board, the turn clock - is the same
 throughout; what changes is what is built around it. Use the **same version on
-every computer** in a game. (The first three share one protocol. KK Plus extends
-it, and mixing KK Plus with the older ones has not been tested.)
+every computer** in a game.
 
 | Version | Branch | Snapshot | What it is |
 |---|---|---|---|
@@ -42,16 +42,17 @@ it, and mixing KK Plus with the older ones has not been tested.)
 | **Enhanced** | [`enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/enhanced) | [`v2-enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v2-enhanced) | Classic plus four aids for connecting across machines. |
 | **KK** | [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) | [`v3-kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v3-kk) | Enhanced plus five game modes, a custom game, and per-match scoring. |
 | **KK Plus** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) and [`kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus) | [`v4-kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v4-kk-plus) | KK plus a computer opponent, an AI coach, chat, a hall of fame, sound, themes and automatic reconnecting. |
+| **Elo Progression** | [`feature/elo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/feature/elo) | *(this branch)* | KK Plus with complete Elo rating system, rank tiers, placement calibration, streak bonuses, and peak tracking. |
 
 Click a branch or snapshot above to browse it on GitHub, or switch locally:
 
 ```bash
 git checkout v1-demo     # the version shown in class
-git checkout main        # the newest version
+git checkout main        # stable KK Plus
+git checkout feature/elo # competitive Elo progression
 ```
 
-You are reading the newest version, KK Plus. The `main` and `kk-plus` branches
-hold the same code.
+You are reading the `feature/elo` branch.
 
 ---
 
@@ -69,6 +70,7 @@ Everything in KK, plus eight more features. **Two are AI.**
 | 6 | **Themes** | Dark, Light and a colour-blind-safe palette (**T** or the Theme button). Your choice and the mute setting are remembered in `client_prefs.json`. |
 | 7 | **Automatic reconnecting** | If your Wi-Fi drops, the server holds your seat, score and turn for 30 seconds and pauses the match, and your window reconnects by itself. A token proves it is you, so nobody else can take the seat. |
 | 8 | **Scale-to-fit window** | The game is drawn on a fixed canvas and scaled to your screen, so it fits small laptops and can be resized freely. Clicks are mapped back correctly. |
+| 9 | **Competitive Elo & Rank Tiers** | Real-time per-mode Elo ratings, 6 competitive tiers (Bronze to Master 2000+), provisional calibration ($K=64$), win streak bonuses, peak rating tracking, and a casual toggle. Full details in [**ELO.md**](ELO.md). |
 
 Also new: each bomb is ringed in the colour of the player who found it (with a
 small 1 or 2 for colour-blind players), the last move is outlined, and newly
@@ -95,6 +97,20 @@ python tests/run_all.py
 
 Seven headless suites, 83 checks - no window opens and no sound plays. Run one
 with `python tests/run_all.py ai`.
+
+---
+
+## Competitive Elo Rating System
+
+The `feature/elo` branch adds skill-based matchmaking ratings and tier progression:
+* **Per-mode ratings:** Independent Elo ratings for Classic, Radius 2, Minesweeper, and 3D Cube.
+* **6 competitive rank tiers:** Bronze (`<1100`), Silver (`1100`), Gold (`1300`), Platinum (`1500`), Diamond (`1700`), and Master (`2000+`).
+* **Placement calibration:** Accelerated $K=64$ factor for a player's first 5 matches per mode.
+* **Win streak bonus:** Flat $+6$ Elo bonus for streaks of 3 or more consecutive wins.
+* **Peak Elo tracking:** All-time high rating preserved and shown in the Hall of Fame card.
+* **Ranked vs. Casual toggle:** In-game mode toggle with automatic board reset to prevent mid-match rating manipulation.
+
+👉 **For complete mathematical formulas, tier tables, and architecture details, see [ELO.md](ELO.md).**
 
 ---
 
