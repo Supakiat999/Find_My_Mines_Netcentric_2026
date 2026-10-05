@@ -12,57 +12,113 @@ per bomb; the match ends when all 11 are found.
 
 ---
 
+## Status
+
+| Part | State |
+|---|---|
+| Server — `config.py` · `protocol.py` · `game.py` · `server.py` | Done, verified by a headless socket test |
+| Client — `client.py` | Done, verified by two clients playing a full match |
+| Connection aids | Live server address, browser check, address argument |
+| Game modes | Classic, Radius 2, Minesweeper, 3D Cube, Custom |
+| AI, chat, stats, sound, themes, reconnect (this branch) | Done, 83 automated checks |
+
+Step-by-step setup, including the two-computer demo, is in
+**[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
+
+---
+
 ## Versions - pick one
 
-Four versions live on four branches, and each contains everything in the one
-before it. The core game - the rules, the board, the turn clock - is the same
+Four versions, each containing everything in the one before it. `main` carries
+the newest (KK Plus); the version demonstrated in class is the `v1-demo`
+snapshot. The core game - the rules, the board, the turn clock - is the same
 throughout; what changes is what is built around it. Use the **same version on
 every computer** in a game. (The first three share one protocol. KK Plus extends
 it, and mixing KK Plus with the older ones has not been tested.)
 
 | Version | Branch | Snapshot | What it is |
 |---|---|---|---|
-| **Classic** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) | [`v1-demo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v1-demo) | The version demonstrated in class. The assignment and nothing else. |
+| **Classic** | *(snapshot only)* | [`v1-demo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v1-demo) | The version demonstrated in class. The assignment and nothing else. It used to be the `main` branch. |
 | **Enhanced** | [`enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/enhanced) | [`v2-enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v2-enhanced) | Classic plus four aids for connecting across machines. |
 | **KK** | [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) | [`v3-kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v3-kk) | Enhanced plus five game modes, a custom game, and per-match scoring. |
-| **KK Plus** | [`kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus) | [`v4-kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v4-kk-plus) | KK plus a computer opponent, an AI coach, chat, a hall of fame, sound, themes and automatic reconnecting. |
+| **KK Plus** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) and [`kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus) | [`v4-kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v4-kk-plus) | KK plus a computer opponent, an AI coach, chat, a hall of fame, sound, themes and automatic reconnecting. |
 
-Click a branch above to browse it here on GitHub, or switch locally:
+Click a branch or snapshot above to browse it on GitHub, or switch locally:
 
 ```bash
-git checkout kk
+git checkout v1-demo     # the version shown in class
+git checkout main        # the newest version
 ```
 
-You are reading the **Classic** branch. Everything below this section describes
-that version.
+You are reading the newest version, KK Plus. The `main` and `kk-plus` branches
+hold the same code.
 
 ---
 
-## What the KK version has
+## KK Plus features
 
-The newest version, on the [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) branch. It contains
-everything in Classic and Enhanced, plus:
+Everything in KK, plus eight more features. **Two are AI.**
 
-### Five game modes
+| # | Feature | What it does |
+|---|---|---|
+| 1 | **Play the computer** (AI) | The OPPONENT card on the right picks Player, Easy, Medium or Hard. With one person connected the computer takes the other seat and plays by itself after a short pause, in every mode. It always agrees to a rematch, steps aside when a second person joins, and comes back if they leave. |
+| 2 | **AI coach** (AI) | On your turn, **Ask the coach** (or press **H**) names the best slot and tints every covered slot with its odds. Three questions per player per match. On boards too big to count exactly the answer is marked as an estimate. |
+| 3 | **Chat** | A chat panel for players and spectators, with quick replies (GG, Nice!, Oops, Again?). Messages are trimmed to 120 characters and rate-limited; people who join late see recent history. |
+| 4 | **Hall of fame and match stats** | The end screen shows picks, best chain and hit rate for each player. Wins, losses and points are kept per nickname in `stats.json`, so the table survives restarts. The computer is never listed. |
+| 5 | **Sound effects** | Slot clicks, a chime for a bomb you want, a thump for one you do not, a ding on your turn, a warning tick in the last three seconds, and win/lose/draw tunes. All synthesised from maths - there are no audio files. **M** mutes. |
+| 6 | **Themes** | Dark, Light and a colour-blind-safe palette (**T** or the Theme button). Your choice and the mute setting are remembered in `client_prefs.json`. |
+| 7 | **Automatic reconnecting** | If your Wi-Fi drops, the server holds your seat, score and turn for 30 seconds and pauses the match, and your window reconnects by itself. A token proves it is you, so nobody else can take the seat. |
+| 8 | **Scale-to-fit window** | The game is drawn on a fixed canvas and scaled to your screen, so it fits small laptops and can be resized freely. Clicks are mapped back correctly. |
 
-Chosen from buttons in the game window - either player can switch, and the
-board is re-dealt for everyone at once. **Classic is the default, and its rules
-are untouched**, so the graded game is never altered by the extras.
+Also new: each bomb is ringed in the colour of the player who found it (with a
+small 1 or 2 for colour-blind players), the last move is outlined, and newly
+opened slots animate.
+
+**Keys:** `Enter` type in the chat - `M` sound - `T` theme - `H` ask the coach -
+right-click flags a slot.
+
+**How the AI works.** Every opened number is a constraint ("exactly two of these
+neighbours are bombs"). The covered slots those numbers touch are split into
+independent groups and each is solved exactly by backtracking, then the groups
+are weighted by the ways the remaining bombs can fall elsewhere. That gives a
+real probability for every covered slot, not a guess. Positions too large to
+enumerate (the cube, big custom boards) fall back to sampling many valid layouts.
+The engine in `ai.py` is handed only the visible board, so neither the computer
+nor the coach can see hidden bombs. Measured results are in
+[CHANGELOG.md](CHANGELOG.md).
+
+### Running the tests
+
+```bash
+python tests/run_all.py
+```
+
+Seven headless suites, 83 checks - no window opens and no sound plays. Run one
+with `python tests/run_all.py ai`.
+
+---
+
+## Game modes
+
+The mode is chosen on the **server console**, from the row of buttons beside
+RESET. Changing it deals a fresh board for everyone at once. `Classic` is the
+default and is exactly the game the assignment asks for, so the graded rules are
+never disturbed by the extras.
 
 | Mode | Board | How it plays |
 |---|---|---|
 | **Classic** | 6x6, 11 bombs | Find bombs, one point each. A bomb keeps your turn, an empty slot passes it. |
-| **Radius 2** | 6x6, 11 bombs | Hints count **2** for every bomb touching the slot and **1** for every bomb a ring further out, so each bomb influences 24 slots instead of 8 and hints can run past 8. |
-| **Minesweeper** | 6x6, 11 bombs | Inverted: bombs are the hazard. Safe ground scores a point per slot and keeps your turn, a zero cascades open, and a bomb ends your turn for nothing. |
-| **3D Cube** | 4x4x4, 19 bombs | The hunt in three dimensions - up to **26** neighbours per slot. All four layers are drawn side by side, so the whole cube is clickable at once. |
-| **Custom** | you decide | Board size, bomb count, seconds per turn, flat or cube, hint style, and whether bombs are points or hazards - any combination. |
+| **Radius 2** | 6x6, 11 bombs | Same rules, but a hint counts **2** for every bomb touching the slot and **1** for every bomb a ring further out - so each bomb influences 24 slots instead of 8, and hints can run past 8. |
+| **Minesweeper** | 6x6, 11 bombs | Inverted: bombs are the hazard. Open safe ground for a point per slot and keep your turn; a zero cascades open; hitting a bomb ends your turn for nothing. The match ends when the last safe slot is open. |
+| **3D Cube** | 4x4x4, 19 bombs | The classic hunt in three dimensions. Every slot has up to **26** neighbours instead of 8. All four layers are drawn side by side, so the whole cube is clickable at once. |
+| **Custom** | you decide | Set the board size, the bomb count, the seconds per turn, flat or cube, which hint style, and whether bombs are points or hazards. Any combination of the above. |
 
-### A custom game
+### Custom settings
 
-Picking **Custom** opens a settings panel. Either player can change any of it
-mid-session, and the board is re-dealt on each change.
+Pick **Custom** and a panel opens. Either player can change any of it while you
+play; the board is re-dealt the moment something changes.
 
-| Setting | Range |
+| Setting | Choices |
 |---|---|
 | Board size | 4-10 flat, 3-5 as a cube |
 | Bombs | 1 up to 45% of the slots |
@@ -71,53 +127,12 @@ mid-session, and the board is re-dealt on each change.
 | Hints | Touching bombs only, or the two-ring 2/1 weighting |
 | Bombs are | Points to collect, or hazards to avoid |
 
-Every value is clamped on the server, so a client cannot ask for a 500x500
-board or more bombs than there are slots.
+Every value is clamped on the **server** by `game.clamp_custom()`, so a client
+cannot ask for a 500x500 board or more bombs than there are slots.
 
-### Also in KK
-
-- **Scores reset every match**, so a rematch is a fresh contest rather than a
-  continuation. Classic and Enhanced carry them over.
-- **Flags** - right-click marks a slot in any mode. A flag blocks only the
-  player who planted it, so it cannot be used to wall the board off.
-- The four connection aids inherited from Enhanced: a **live server address**,
-  a **browser reachability page**, a loopback guard, and `python client.py <ip>`.
-
-Full detail, including the bugs fixed along the way, is in
-**[CHANGELOG.md](CHANGELOG.md)**. Setup and troubleshooting is in
-**[HOW_TO_RUN.md](HOW_TO_RUN.md)**, and a layer-by-layer walkthrough of how the
-whole thing works is in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
-
----
-
-## What the KK Plus version has
-
-The newest version, on the [`kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus) branch. It contains
-everything in KK, plus eight more features - **two of them AI**:
-
-- **Play the computer** (AI) - Easy, Medium or Hard, in every mode. It reasons
-  from the numbers on the board with a real probability engine and never sees
-  the hidden bombs.
-- **AI coach** (AI) - names the best slot and shows the odds for every covered
-  slot, three questions per match.
-- **Chat** with quick replies, **hall of fame** and match stats, **sound
-  effects**, three **themes** including a colour-blind-safe one, **automatic
-  reconnecting** that holds a dropped player's seat, and a **scale-to-fit
-  window** for small screens.
-
-It also comes with its own test suite: `python tests/run_all.py` runs 83 checks.
-Details are in [CHANGELOG.md](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/blob/kk-plus/CHANGELOG.md), and the full feature
-table is in the [`kk-plus` README](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus#readme).
-
----
-
-## Status
-
-| Part | State |
-|---|---|
-| Server - `config.py` - `protocol.py` - `game.py` - `server.py` | Done, verified by a headless socket test |
-| Client - `client.py` | Done, verified by two clients playing a full match |
-| Extra features | Done on the [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) branch |
+**Flags.** Right-click marks a slot in any mode. A flag only blocks the player
+who planted it, so it is a note to yourself and cannot be used to wall the board
+off from your opponent.
 
 ---
 
@@ -131,6 +146,13 @@ table is in the [`kk-plus` README](https://github.com/Supakiat999/Find_My_Mines_
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
 | `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
 | `requirements.txt` | The one dependency, pygame. |
+| `ai.py` | The probability engine behind the computer opponent and the coach. Sees only the visible board. |
+| `stats.py` | The hall of fame, saved to `stats.json`. |
+| `sound.py` | Sound effects, synthesised from maths - no audio files. |
+| `themes.py` | The three colour themes, and the contrast measure the tests use. |
+| `tests/` | Seven headless test suites. Run them with `python tests/run_all.py`. |
+| `PLAY-Windows.bat` / `PLAY-Mac.command` | Double-click launchers for players - check Python, install pygame, ask for the address. |
+| `HOST-Windows.bat` / `HOST-Mac.command` | Double-click launchers that start the server. |
 | `ARCHITECTURE.md` | How the system works layer by layer, from Wi-Fi frames up to the game rules — written for presenting in class. |
 | `HOW_TO_RUN.md` | Setup and troubleshooting, including what to send the other players. |
 
@@ -263,7 +285,7 @@ so both players see the same time and no client can stall its own turn.
 - Match ends when all 11 bombs are found; both clients then show **Win**/**Lost**
   with both scores and a Rematch button
 - A rematch needs **both** players to agree, and the previous **winner starts**
-- Scores carry over between rematches, and only the server's Reset clears them
+- Every match starts level: scores belong to the match, not the session
 
 Two readings of the brief were settled as follows, both changeable in one line:
 

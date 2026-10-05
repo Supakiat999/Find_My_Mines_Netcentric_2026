@@ -5,6 +5,29 @@ two-computer setup the assignment asks for.
 
 ---
 
+## The easy way: double-click a launcher
+
+| You are on | Play | Host the game |
+|---|---|---|
+| Windows | `PLAY-Windows.bat` | `HOST-Windows.bat` |
+| macOS | `PLAY-Mac.command` | `HOST-Mac.command` |
+
+The launcher checks for Python, installs pygame the first time, and asks for
+the server address - press Enter to use the one already in `config.py`. The
+host's launcher just starts the server and shows the address to hand out.
+
+On macOS the executable bit is often lost when a folder is zipped and mailed
+around. If double-clicking does nothing, run this once in Terminal in that
+folder:
+
+```bash
+chmod +x PLAY-Mac.command HOST-Mac.command
+```
+
+The rest of this guide is the manual route, which does the same thing.
+
+---
+
 ## Before anything: install pygame
 
 On **every** computer that will run the game:
@@ -84,15 +107,16 @@ Either edit `config.py`:
 SERVER_HOST = "192.168.1.14"
 ```
 
-On the **`enhanced`** branch you can skip the file entirely and pass the
-address when you start the client instead:
+...or skip the file entirely and pass the address when you start the client:
 
 ```bash
 python client.py 192.168.1.14
 ```
 
-That option does not exist on `main` - there, edit `config.py` as above.
-See [CHANGELOG.md](CHANGELOG.md) for what separates the two branches.
+Both do the same thing on this branch. The argument is the safer one when the
+server has just moved, because there is no file to forget to save - but note it
+only exists here on `enhanced`, not on `main`.
+See [CHANGELOG.md](CHANGELOG.md) for what separates the two.
 
 ### Step 4 — Play
 
@@ -110,8 +134,8 @@ the other runs only a client.
 
 > 1. Install Python 3, then run `pip install -r requirements.txt`
 > 2. Download the code: https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026
-> 3. Open `config.py` and set `SERVER_HOST = "<my IP>"`, then save
-> 4. Run `python client.py` — type a nickname, press Enter
+> 3. Run `python client.py <my IP>` — type a nickname, press Enter
+>    (or set `SERVER_HOST` in `config.py` and just run `python client.py`)
 > 5. You must be on the same Wi-Fi as me. If it will not connect, join my phone
 >    hotspot and I will send the new IP.
 
@@ -177,6 +201,34 @@ hotspot is the reliable fallback for the demo, so set one up in advance.
   first.
 - A third person can connect and watch — they appear in the ONLINE list at the
   bottom and follow the board, but cannot click.
+
+## The extras (KK Plus)
+
+- **Play alone:** in the OPPONENT card on the right, pick Easy, Medium or Hard.
+  Pick Player to wait for a friend instead. It only works while one person is
+  connected.
+- **AI coach:** on your turn press **Ask the coach** (or **H**). The best slot is
+  outlined and every covered slot shows its odds. You get three questions per
+  match; **Odds** turns the tint on and off.
+- **Chat:** press **Enter** or click the box, type, press Enter again. The four
+  buttons send quick replies. Click anywhere else to stop typing.
+- **Keys:** `M` sound on/off - `T` theme - `H` coach - right-click flags a slot.
+- **If your Wi-Fi drops:** do nothing. The match pauses, your seat is held for 30
+  seconds and the window reconnects by itself.
+- **Small screen?** The window scales itself to fit. You can also drag its edges.
+
+Your theme, your mute setting and the hall of fame are saved next to the game in
+`client_prefs.json` and `stats.json`. They are yours - delete them any time to
+start fresh.
+
+## Running the tests
+
+```bash
+python tests/run_all.py
+```
+
+No window opens and no sound plays. It takes about two minutes, most of it the AI
+accuracy check. To run just one part: `python tests/run_all.py ai`.
 
 ## The server window
 
