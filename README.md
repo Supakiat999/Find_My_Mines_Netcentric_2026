@@ -28,18 +28,19 @@ Step-by-step setup, including the two-computer demo, is in
 
 ## Versions - pick one
 
-Four versions live on four branches, and each contains everything in the one
-before it. The core game - the rules, the board, the turn clock - is the same
+Four versions, each containing everything in the one before it. `main` carries
+the newest (KK Plus); the version demonstrated in class is the `v1-demo`
+snapshot. The core game - the rules, the board, the turn clock - is the same
 throughout; what changes is what is built around it. Use the **same version on
 every computer** in a game. (The first three share one protocol. KK Plus extends
 it, and mixing KK Plus with the older ones has not been tested.)
 
 | Version | Branch | Snapshot | What it is |
 |---|---|---|---|
-| **Classic** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) | [`v1-demo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v1-demo) | The version demonstrated in class. The assignment and nothing else. |
+| **Classic** | *(snapshot only)* | [`v1-demo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v1-demo) | The version demonstrated in class. The assignment and nothing else. It used to be the `main` branch. |
 | **Enhanced** | [`enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/enhanced) | [`v2-enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v2-enhanced) | Classic plus four aids for connecting across machines. |
 | **KK** | [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) | [`v3-kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v3-kk) | Enhanced plus five game modes, a custom game, and per-match scoring. |
-| **KK Plus** | [`kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus) | [`v4-kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v4-kk-plus) | KK plus a computer opponent, an AI coach, chat, a hall of fame, sound, themes and automatic reconnecting. |
+| **KK Plus** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) and [`kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus) | [`v4-kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v4-kk-plus) | KK plus a computer opponent, an AI coach, chat, a hall of fame, sound, themes and automatic reconnecting. |
 
 Click a branch above to browse it on GitHub, or switch locally:
 
