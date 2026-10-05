@@ -56,3 +56,22 @@ CUSTOM_LIMITS = {
 # runs out".  We read that as: the countdown keeps running, it is not
 # restarted.  Flip this to True if it should restart on every bomb.
 RESET_TIMER_ON_BOMB = False
+
+# --- Extra features ----------------------------------------------------
+# How many times each player may ask the AI coach for advice per match.
+HINTS_PER_MATCH = 3
+
+# How long a dropped player's seat is held for them to reconnect, in seconds.
+# The match pauses while they are away; after this the seat is given up.
+RECONNECT_GRACE = 30
+
+# The computer opponent's thinking time, in seconds (shortest, longest).
+BOT_THINK_SECONDS = (0.7, 1.4)
+
+# Where the hall of fame is saved.  "auto" puts stats.json beside the game;
+# None keeps it in memory only (the tests do this).
+STATS_FILE = "auto"
+
+# Where the game window remembers your theme and sound choice.  "auto" puts
+# client_prefs.json beside the game; None turns remembering off (tests do this).
+PREFS_FILE = "auto"

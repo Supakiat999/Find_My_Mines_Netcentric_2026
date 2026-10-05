@@ -14,6 +14,10 @@ FLAG = "flag"          # {row, col, layer} - plant or lift a marker
 REMATCH = "rematch"    # {}
 SET_MODE = "set_mode"  # {mode} - players can switch the game from the client
 SET_CUSTOM = "set_custom"  # {settings} - board size, bombs, rules for Custom
+CHAT = "chat"              # {text} - a message to everyone
+HINT = "hint"              # {} - ask the AI coach about the best slot
+SET_BOT = "set_bot"        # {level} - play the computer: off/easy/medium/hard
+# JOIN also carries {token} when a dropped player is coming back.
 
 # --- server -> client --------------------------------------------------
 WELCOME = "welcome"        # {client_id, role, message}
@@ -23,6 +27,8 @@ TICK = "tick"              # {seconds_left}
 MATCH_END = "match_end"    # {winner_id, draw, players}
 SERVER_RESET = "server_reset"  # {} - admin pressed Reset
 ERROR = "error"            # {message}
+CHAT_MSG = "chat_msg"      # {id, name, text, system, t}
+HINT_RESULT = "hint_result"  # {cell, p, exact, goal, heat, left}
 
 
 def encode(msg_type, **payload):

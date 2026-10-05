@@ -7,7 +7,8 @@ Threading model
     accept thread   : waits for new TCP connections
     one per client  : blocking recv, pushes decoded messages onto a queue
     main thread     : pygame loop - drains that queue, runs the turn clock,
-                      mutates the game, broadcasts, and draws the console
+                      drives the computer opponent, mutates the game,
+                      broadcasts, and draws the console
 
 Only the main thread ever touches the Game or sends on a socket, so the
 rules never need locking; the lock guards the client table alone.
@@ -15,7 +16,10 @@ rules never need locking; the lock guards the client table alone.
 Run:  python server.py
 """
 
+import math
 import queue
+import random
+import secrets
 import socket
 import sys
 import threading
@@ -24,9 +28,11 @@ from collections import deque
 
 import pygame
 
+import ai
 import config
 import game as game_rules
 import protocol
+import stats as stats_mod
 
 WIN_W, WIN_H = 940, 720
 FPS = 30
@@ -44,6 +50,15 @@ WARN = (251, 191, 36)
 BAD = (248, 113, 113)
 HIDDEN_CELL = (44, 55, 74)
 
+# The computer opponent sits in a seat like a player but is not a socket.
+BOT_ID = -1
+BOT_LABELS = {"easy": "Computer (Easy)", "medium": "Computer (Medium)",
+              "hard": "Computer (Hard)"}
+
+CHAT_LIMIT = 120        # characters in one message
+CHAT_HISTORY = 40       # messages kept for people who join late
+CHAT_GAP = 0.6          # seconds between one person's messages
+
 
 class ClientRecord:
     """One connected socket and what we know about it."""
@@ -59,6 +74,9 @@ class ClientRecord:
         self.alive = True         # connection order, so a client sitting on
                                   # the nickname screen cannot take a seat
                                   # from someone already playing
+        self.token = secrets.token_hex(8)   # proves who you are on reconnect
+        self.away_since = None    # set while we hold the seat of a dropped player
+        self.last_chat = 0.0
 
     @property
     def label(self):
@@ -79,6 +97,16 @@ class Server:
         self.last_tick_sent = None
         self.rematch_votes = set()
         self.first_match_done = False
+        self.paused_left = None           # seconds left when the clock was paused
+
+        self.bot_level = "off"            # off | easy | medium | hard
+        self.bot_ready_at = None          # when the computer will play its move
+        self.rng = random.Random()
+
+        self.chat = deque(maxlen=CHAT_HISTORY)
+        path = (stats_mod.default_path() if config.STATS_FILE == "auto"
+                else config.STATS_FILE)
+        self.board = stats_mod.Leaderboard(path)
 
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -228,7 +256,8 @@ class Server:
             return sorted(self.clients.values(), key=lambda c: c.connected_at)
 
     def _joined_clients(self):
-        """Everyone who has sent a nickname, in the order they sent it."""
+        """Everyone who has sent a nickname, in the order they sent it.
+        Includes players whose connection dropped but whose seat is held."""
         with self.clients_lock:
             named = [c for c in self.clients.values() if c.name]
         return sorted(named, key=lambda c: c.joined_at)
@@ -252,13 +281,45 @@ class Server:
                 rec.alive = False
 
     # ------------------------------------------------------------------
+    # who is who, including the computer
+    # ------------------------------------------------------------------
+    def _bot_seated(self):
+        return BOT_ID in self.game.players
+
+    def _bot_name(self):
+        return BOT_LABELS.get(self.bot_level, "Computer")
+
+    def _names(self):
+        """Player id -> display name, for humans and the computer alike."""
+        names = {c.id: c.name for c in self._joined_clients()}
+        if self._bot_seated():
+            names[BOT_ID] = self._bot_name()
+        return names
+
+    def _anyone_away(self):
+        return any(c.away_since is not None for c in self._joined_clients())
+
+    def _unique_name(self, wanted):
+        taken = {c.name for c in self._joined_clients() if c.name}
+        taken.update(BOT_LABELS.values())
+        name = wanted
+        n = 2
+        while name in taken:
+            name = "%s (%d)" % (wanted, n)
+            n += 1
+        return name
+
+    # ------------------------------------------------------------------
     # snapshots pushed to clients
     # ------------------------------------------------------------------
     def _clients_payload(self):
-        joined = self._joined_clients()
+        humans = self._joined_clients()
         return {
-            "count": len(joined),
-            "list": [{"id": c.id, "name": c.name, "role": c.role} for c in joined],
+            "count": len([c for c in humans if c.alive]),
+            "list": [{"id": c.id, "name": c.name, "role": c.role,
+                      "away": not c.alive} for c in humans],
+            "bots": ([{"id": BOT_ID, "name": self._bot_name()}]
+                     if self._bot_seated() else []),
         }
 
     def _seconds_left(self):
@@ -266,13 +327,28 @@ class Server:
             return 0
         return max(0, int(round(self.turn_deadline - time.time())))
 
+    def _away_payload(self):
+        now = time.time()
+        return [{"id": c.id, "name": c.name,
+                 "seconds": max(0, int(config.RECONNECT_GRACE
+                                       - (now - c.away_since)))}
+                for c in self._joined_clients() if c.away_since is not None]
+
     def _state_payload(self):
         g = self.game
-        by_id = {c.id: c for c in self._joined_clients()}
-        players = [{"id": pid,
-                    "name": by_id[pid].name if pid in by_id else "?",
-                    "score": g.scores.get(pid, 0)}
-                   for pid in g.players]
+        names = self._names()
+        players = []
+        for pid in g.players:
+            name = names.get(pid, "?")
+            entry = {"id": pid, "name": name, "score": g.scores.get(pid, 0),
+                     "bot": pid == BOT_ID,
+                     "hints_left": g.hints_left.get(pid, 0)}
+            if pid != BOT_ID:
+                record = self.board.record_of(name)
+                entry["record"] = {k: record[k] for k in
+                                   ("wins", "losses", "draws", "points")}
+            players.append(entry)
+        away = self._away_payload()
         return {
             "phase": g.phase,
             "mode": g.mode,
@@ -281,7 +357,10 @@ class Server:
             "grid_size": g.grid_size,
             "board": g.board_view(),          # never reveals unfound bombs
             "flags": g.flag_view(),
+            "bomb_owners": g.owner_view(),
+            "last_move": g.last_move_view(),
             "safe_left": g.safe_left,
+            "bombs_are_bad": g.bombs_are_bad,
             "players": players,
             "current_turn": g.current_turn,
             "bombs_left": g.bombs_left,
@@ -293,6 +372,11 @@ class Server:
             "rematch_votes": sorted(self.rematch_votes),
             "spectators": [c.name for c in self._joined_clients()
                            if c.role == "spectator"],
+            "bot_level": self.bot_level,
+            "bot_seated": self._bot_seated(),
+            "away": away,
+            "paused": bool(away) and g.phase == game_rules.PHASE_PLAYING,
+            "leaderboard": self.board.top(5),
         }
 
     def push_clients(self):
@@ -301,25 +385,92 @@ class Server:
     def push_state(self):
         self._broadcast(protocol.STATE, **self._state_payload())
 
+    def _send_welcome(self, rec, reconnected=False):
+        greeting = ("Welcome back, %s." if reconnected else "Welcome, %s.") % rec.name
+        self._send(rec, protocol.WELCOME,
+                   client_id=rec.id, role=rec.role, message=greeting,
+                   token=rec.token, reconnected=reconnected,
+                   grid_size=self.game.grid_size,
+                   dims=list(self.game.dims),
+                   mode=self.game.mode,
+                   bombs_total=self.game.bomb_count,
+                   turn_seconds=self.game.turn_seconds,
+                   bot_level=self.bot_level,
+                   chat=list(self.chat),
+                   leaderboard=self.board.top(5))
+
+    # ------------------------------------------------------------------
+    # chat
+    # ------------------------------------------------------------------
+    def _announce(self, text, player_id=0, name="", system=False):
+        entry = {"id": player_id, "name": name, "text": text,
+                 "system": system, "t": int(time.time())}
+        self.chat.append(entry)
+        self._broadcast(protocol.CHAT_MSG, **entry)
+
+    def _note(self, text):
+        """A line of table talk from the server itself."""
+        self._announce(text, system=True)
+
+    def _on_chat(self, rec, msg):
+        if not rec.name:
+            return
+        text = " ".join(str(msg.get("text", "")).split())[:CHAT_LIMIT]
+        if not text:
+            return
+        now = time.time()
+        if now - rec.last_chat < CHAT_GAP:
+            self._send(rec, protocol.ERROR, message="slow down a little")
+            return
+        rec.last_chat = now
+        self._announce(text, rec.id, rec.name)
+
     # ------------------------------------------------------------------
     # seating and match flow
     # ------------------------------------------------------------------
+    def _bot_wanted(self, humans):
+        """The computer sits down only opposite exactly one human."""
+        return self.bot_level in ai.LEVELS and humans == 1
+
     def _reseat(self):
-        """First MAX_PLAYERS joiners play; anyone later watches."""
+        """First MAX_PLAYERS joiners play; anyone later watches.  With one
+        human and the computer switched on, the computer takes the other seat.
+
+        Changing who is seated ends the match in progress - a match with
+        different players is a different match.
+        """
+        before = list(self.game.players)
         joined = self._joined_clients()
         seats = [c.id for c in joined[:config.MAX_PLAYERS]]
         for c in joined:
             c.role = "player" if c.id in seats else "spectator"
-        if seats != self.game.players:
+        if self._bot_wanted(len(joined)):
+            seats = seats[:1] + [BOT_ID]
+        if seats != before:
             self.game.seat_players(seats)
+            if (set(seats) != set(before)
+                    and self.game.phase != game_rules.PHASE_WAITING):
+                self._halt("Match halted - the seating changed")
+
+    def _halt(self, reason):
+        """Stop the current match and wait for a fresh start."""
+        self.game.phase = game_rules.PHASE_WAITING
+        self.game.current_turn = None
+        self._stop_turn_clock()
+        self.rematch_votes.clear()
+        self.bot_ready_at = None
+        self.paused_left = None
+        self.say(reason)
 
     def _begin_match(self, first_player=None):
         if not self.game.start_match(first_player):
             return
         self.rematch_votes.clear()
+        self.bot_ready_at = None
+        self.paused_left = None
         self._start_turn_clock()
         self.first_match_done = True
-        names = {c.id: c.name for c in self._joined_clients()}
+        names = self._names()
         self.say("Match started - %s goes first"
                  % names.get(self.game.current_turn, "?"))
 
@@ -331,8 +482,24 @@ class Server:
         self.turn_deadline = None
         self.last_tick_sent = None
 
+    def _pause_clock(self):
+        """Freeze the turn while a player is away."""
+        if self.turn_deadline is not None:
+            self.paused_left = max(0.5, self.turn_deadline - time.time())
+        self._stop_turn_clock()
+
+    def _resume_clock(self):
+        if (self.paused_left is not None and not self._anyone_away()
+                and self.game.phase == game_rules.PHASE_PLAYING):
+            self.turn_deadline = time.time() + self.paused_left
+            self.last_tick_sent = None
+            self.paused_left = None
+
     def _maybe_autostart(self):
-        """Kick off a match as soon as two players are seated."""
+        """Kick off a match as soon as two players are seated - and nobody
+        has dropped out, since a match should not start without them."""
+        if self._anyone_away():
+            return
         if self.game.phase == game_rules.PHASE_WAITING and self.game.can_start():
             # First match of the session: the server picks the starter at
             # random.  Later ones follow the previous winner.
@@ -342,19 +509,41 @@ class Server:
     def _end_match(self):
         self._stop_turn_clock()
         g = self.game
-        by_id = {c.id: c for c in self._joined_clients()}
+        names = self._names()
+        players = [{"id": pid, "name": names.get(pid, "?"),
+                    "score": g.scores.get(pid, 0)} for pid in g.players]
+        detail = []
+        for row in g.match_stats():
+            detail.append({**row, "name": names.get(row["id"], "?"),
+                           "score": g.scores.get(row["id"], 0)})
+
+        # humans go on the hall of fame; the computer does not
+        results = []
+        for p in players:
+            if p["id"] == BOT_ID:
+                continue
+            if g.last_winner is None:
+                outcome = "draw"
+            else:
+                outcome = "win" if p["id"] == g.last_winner else "loss"
+            results.append({"name": p["name"], "result": outcome,
+                            "points": p["score"]})
+        self.board.record_match(results)
+
+        if self._bot_seated():
+            self.rematch_votes.add(BOT_ID)      # the computer always says yes
         self._broadcast(
             protocol.MATCH_END,
             winner_id=g.last_winner,
             draw=g.last_winner is None,
-            players=[{"id": pid,
-                      "name": by_id[pid].name if pid in by_id else "?",
-                      "score": g.scores.get(pid, 0)} for pid in g.players],
+            players=players,
+            stats=detail,
+            leaderboard=self.board.top(5),
         )
         if g.last_winner is None:
             self.say("Match over - draw")
-        elif g.last_winner in by_id:
-            self.say("Match over - %s wins" % by_id[g.last_winner].name)
+        elif g.last_winner in names:
+            self.say("Match over - %s wins" % names[g.last_winner])
         else:
             self.say("Match over")
 
@@ -367,9 +556,12 @@ class Server:
         self.game.reset_scores()
         self.rematch_votes.clear()
         self._stop_turn_clock()
+        self.bot_ready_at = None
+        self.paused_left = None
         self.first_match_done = False
         self._reseat()
         self.say("Mode: %s" % game_rules.MODE_LABELS.get(mode, mode))
+        self._note("Mode is now %s" % game_rules.MODE_LABELS.get(mode, mode))
         self._broadcast(protocol.SERVER_RESET)
         self.push_clients()
         self._maybe_autostart()
@@ -380,6 +572,8 @@ class Server:
         self.game.full_reset()
         self.rematch_votes.clear()
         self._stop_turn_clock()
+        self.bot_ready_at = None
+        self.paused_left = None
         self.first_match_done = False
         self._reseat()
         self.say("Server reset - board and scores cleared")
@@ -425,33 +619,61 @@ class Server:
             self._on_set_mode(rec, msg)
         elif kind == protocol.SET_CUSTOM:
             self._on_set_custom(rec, msg)
-
-    def _unique_name(self, wanted):
-        taken = {c.name for c in self._joined_clients() if c.name}
-        name = wanted
-        n = 2
-        while name in taken:
-            name = "%s (%d)" % (wanted, n)
-            n += 1
-        return name
+        elif kind == protocol.CHAT:
+            self._on_chat(rec, msg)
+        elif kind == protocol.HINT:
+            self._on_hint(rec)
+        elif kind == protocol.SET_BOT:
+            self._on_set_bot(rec, msg)
 
     def _on_join(self, rec, msg):
         if rec.name:
             return  # already joined
+
+        # Someone coming back on a new socket proves who they are with the
+        # token they were given, and takes their old seat back.
+        token = msg.get("token")
+        if token:
+            for old in self._joined_clients():
+                if old is not rec and old.token == token:
+                    self._reattach(rec, old)
+                    return
+
         wanted = str(msg.get("nickname", "")).strip()[:16] or "Player"
         rec.name = self._unique_name(wanted)
         rec.joined_at = time.time()
         self._reseat()
-        self._send(rec, protocol.WELCOME,
-                   client_id=rec.id, role=rec.role,
-                   message="Welcome, %s." % rec.name,
-                   grid_size=self.game.grid_size,
-                   dims=list(self.game.dims),
-                   mode=self.game.mode,
-                   bombs_total=self.game.bomb_count,
-                   turn_seconds=self.game.turn_seconds)
+        self._send_welcome(rec)
         self.say("%s joined as %s (%d online)"
-                 % (rec.name, rec.role, len(self._joined_clients())))
+                 % (rec.name, rec.role, len([c for c in self._joined_clients()
+                                             if c.alive])))
+        self._note("%s joined" % rec.name)
+        self.push_clients()
+        self._maybe_autostart()
+        self.push_state()
+
+    def _reattach(self, new, old):
+        """Give a returning player their seat, score and turn back."""
+        new.name = old.name
+        new.joined_at = old.joined_at
+        new.role = old.role
+        new.token = old.token
+        new.away_since = None
+        self.game.rename_player(old.id, new.id)
+        if old.id in self.rematch_votes:
+            self.rematch_votes.discard(old.id)
+            self.rematch_votes.add(new.id)
+        with self.clients_lock:
+            self.clients.pop(old.id, None)
+        old.alive = False
+        try:                        # a half-dead connection may still be open
+            old.sock.close()
+        except OSError:
+            pass
+        self._send_welcome(new, reconnected=True)
+        self.say("%s reconnected" % new.name)
+        self._note("%s is back" % new.name)
+        self._resume_clock()
         self.push_clients()
         self._maybe_autostart()
         self.push_state()
@@ -464,31 +686,39 @@ class Server:
         return (row, col)
 
     def _on_pick(self, rec, msg):
-        cell = self._cell_from(msg)
-        result = self.game.pick(rec.id, cell)
-        if not result.get("ok"):
-            self._send(rec, protocol.ERROR, message=result.get("reason", "invalid"))
+        if self._anyone_away() and self.game.phase == game_rules.PHASE_PLAYING:
+            self._send(rec, protocol.ERROR,
+                       message="paused - waiting for a player to reconnect")
             return
+        self._apply_pick(rec.id, self._cell_from(msg), rec)
+
+    def _apply_pick(self, player_id, cell, rec=None):
+        """One pick, from a human or the computer alike."""
+        result = self.game.pick(player_id, cell)
+        if not result.get("ok"):
+            if rec is not None:
+                self._send(rec, protocol.ERROR,
+                           message=result.get("reason", "invalid"))
+            return result
+        who = self._names().get(player_id, "?")
         where = "(%s)" % ",".join(str(v) for v in cell)
         if result["is_bomb"]:
-            if self.game.mode == game_rules.MODE_SWEEPER:
-                self.say("%s hit a BOMB at %s - turn lost" % (rec.name, where))
+            if self.game.bombs_are_bad:
+                self.say("%s hit a BOMB at %s - turn lost" % (who, where))
             else:
-                self.say("%s found a BOMB at %s - keeps the turn"
-                         % (rec.name, where))
+                self.say("%s found a BOMB at %s - keeps the turn" % (who, where))
                 if config.RESET_TIMER_ON_BOMB and not result["match_over"]:
                     self._start_turn_clock()
         elif result["opened"] > 1:
-            self.say("%s cleared %d slots from %s"
-                     % (rec.name, result["opened"], where))
+            self.say("%s cleared %d slots from %s" % (who, result["opened"], where))
         else:
-            self.say("%s opened %s - %s nearby"
-                     % (rec.name, where, result["value"]))
+            self.say("%s opened %s - %s nearby" % (who, where, result["value"]))
         if result["match_over"]:
             self._end_match()
         elif result["turn_changed"]:
             self._start_turn_clock()
         self.push_state()
+        return result
 
     def _on_flag(self, rec, msg):
         """Markers are advisory - they only block the player who set them."""
@@ -534,6 +764,7 @@ class Server:
         if self.game.mode == game_rules.MODE_CUSTOM:
             self.rematch_votes.clear()
             self._stop_turn_clock()
+            self.bot_ready_at = None
             self.first_match_done = False
             self.game.reset_scores()
             self._broadcast(protocol.SERVER_RESET)
@@ -551,27 +782,151 @@ class Server:
             self._begin_match(self.game.last_winner)
         self.push_state()
 
+    # -- the AI coach ---------------------------------------------------
+    def _on_hint(self, rec):
+        """Advice on the best slot, from the same engine the computer uses.
+
+        It is given only what any player can see, and each player gets a
+        limited number of questions per match.
+        """
+        g = self.game
+        if rec.role != "player":
+            self._send(rec, protocol.ERROR, message="only players can ask the coach")
+            return
+        if g.phase != game_rules.PHASE_PLAYING:
+            self._send(rec, protocol.ERROR, message="no match in progress")
+            return
+        if g.current_turn != rec.id:
+            self._send(rec, protocol.ERROR, message="ask the coach on your own turn")
+            return
+        if not g.use_hint(rec.id):
+            self._send(rec, protocol.ERROR, message="you have no hints left")
+            return
+        info = g.public_info()
+        advice = ai.advise(info["view"], info["dims"], info["weighted"],
+                           info["bombs_left"], info["bombs_are_bad"])
+        if advice is None:
+            g.hints_left[rec.id] += 1                 # nothing to advise: refund
+            self._send(rec, protocol.ERROR, message="nothing left to advise on")
+            return
+        heat = [{"cell": list(cell), "p": round(p, 3)}
+                for cell, p in advice["probs"].items()]
+        self._send(rec, protocol.HINT_RESULT,
+                   cell=list(advice["cell"]), p=round(advice["p"], 3),
+                   exact=advice["exact"],
+                   goal="avoid" if info["bombs_are_bad"] else "collect",
+                   heat=heat, left=g.hints_left.get(rec.id, 0))
+        self.say("%s asked the coach (%d left)" % (rec.name, g.hints_left[rec.id]))
+        self.push_state()
+
+    # -- the computer opponent -----------------------------------------
+    def _on_set_bot(self, rec, msg):
+        level = msg.get("level")
+        if rec.role != "player":
+            self._send(rec, protocol.ERROR, message="only players can do that")
+            return
+        if level != "off" and level not in ai.LEVELS:
+            return
+        if level != "off" and len(self._joined_clients()) >= 2:
+            self._send(rec, protocol.ERROR,
+                       message="two players are already seated")
+            return
+        if level == self.bot_level:
+            return
+        self.bot_level = level
+        if level == "off":
+            self.say("%s switched the computer off" % rec.name)
+            self._note("Computer opponent off")
+        else:
+            self.say("%s chose to play the computer (%s)" % (rec.name, level))
+            self._note("Playing the computer on %s" % level)
+        self._reseat()
+        if self.game.phase != game_rules.PHASE_WAITING:
+            # same seats but a different opponent: start over fairly
+            self._halt("Match restarted against a new opponent")
+        self.push_clients()
+        self._maybe_autostart()
+        self.push_state()
+
+    def _drive_bot(self):
+        """Let the computer take its turn after a short, human-feeling pause."""
+        g = self.game
+        if (not self._bot_seated() or g.phase != game_rules.PHASE_PLAYING
+                or g.current_turn != BOT_ID or self._anyone_away()):
+            self.bot_ready_at = None
+            return
+        now = time.time()
+        if self.bot_ready_at is None:
+            lo, hi = config.BOT_THINK_SECONDS
+            self.bot_ready_at = now + self.rng.uniform(lo, hi)
+            return
+        if now < self.bot_ready_at:
+            return
+        self.bot_ready_at = None
+        info = g.public_info()
+        cell = ai.choose_cell(info["view"], info["dims"], info["weighted"],
+                              info["bombs_left"], info["bombs_are_bad"],
+                              self.bot_level, self.rng)
+        if cell is None:
+            g.pass_turn()
+            self.push_state()
+            return
+        self._apply_pick(BOT_ID, cell)
+
+    # -- leaving and coming back ---------------------------------------
     def _on_disconnect(self, client_id):
+        rec = self._client(client_id)
+        if rec is None:
+            return                      # already replaced by a reconnect
+        if (rec.name and rec.role == "player" and config.RECONNECT_GRACE > 0
+                and rec.away_since is None):
+            # Wi-Fi drops are common.  Hold the seat, pause the clock, and
+            # give them a window to come back before giving the seat up.
+            rec.alive = False
+            rec.away_since = time.time()
+            try:
+                rec.sock.close()
+            except OSError:
+                pass
+            if self.game.phase == game_rules.PHASE_PLAYING:
+                self._pause_clock()
+            self.say("%s lost connection - holding the seat for %ds"
+                     % (rec.name, config.RECONNECT_GRACE))
+            self._note("%s lost connection" % rec.name)
+            self.push_clients()
+            self.push_state()
+            return
+        self._finalize_drop(client_id)
+
+    def _finalize_drop(self, client_id):
         rec = self._drop_client(client_id)
         if rec is None:
             return
         self.say("%s disconnected" % rec.label)
+        if rec.name:
+            self._note("%s left" % rec.name)
         self.rematch_votes.discard(client_id)
-        was_player = client_id in self.game.players
         self._reseat()
-        if was_player and self.game.phase == game_rules.PHASE_PLAYING:
-            self.game.phase = game_rules.PHASE_WAITING
-            self.game.current_turn = None
-            self._stop_turn_clock()
-            self.say("Match halted - waiting for a second player")
+        if not self._anyone_away():
+            self._resume_clock()
         self.push_clients()
         self._maybe_autostart()
         self.push_state()
+
+    def _expire_away(self):
+        now = time.time()
+        for rec in self._joined_clients():
+            if (rec.away_since is not None
+                    and now - rec.away_since > config.RECONNECT_GRACE):
+                self.say("%s did not come back" % rec.name)
+                self._finalize_drop(rec.id)
 
     # ------------------------------------------------------------------
     # turn clock
     # ------------------------------------------------------------------
     def update_clock(self):
+        self._expire_away()
+        self._drive_bot()
         if self.game.phase != game_rules.PHASE_PLAYING or self.turn_deadline is None:
             return
         left = self._seconds_left()
@@ -580,7 +935,7 @@ class Server:
             self._broadcast(protocol.TICK, seconds_left=left,
                             current_turn=self.game.current_turn)
         if time.time() >= self.turn_deadline:
-            names = {c.id: c.name for c in self._joined_clients()}
+            names = self._names()
             self.say("%s ran out of time" % names.get(self.game.current_turn, "?"))
             self.game.pass_turn()
             self._start_turn_clock()
@@ -628,15 +983,26 @@ class ServerUI:
         return pygame.font.Font(None, size)
 
     # -- small drawing helpers -----------------------------------------
-    def text(self, s, pos, font=None, color=TEXT, center=False):
+    def text(self, s, pos, font=None, color=TEXT, center=False, right=False):
         surf = (font or self.f_body).render(str(s), True, color)
         rect = surf.get_rect()
         if center:
             rect.center = pos
+        elif right:
+            rect.topright = pos
         else:
             rect.topleft = pos
         self.screen.blit(surf, rect)
         return surf.get_width()
+
+    def fit(self, s, font, max_width):
+        """Shorten a line with '...' so it never runs out of its panel."""
+        s = str(s)
+        if font.size(s)[0] <= max_width:
+            return s
+        while s and font.size(s + "...")[0] > max_width:
+            s = s[:-1]
+        return s + "..."
 
     def panel(self, rect, title=None):
         pygame.draw.rect(self.screen, PANEL, rect, border_radius=10)
@@ -693,7 +1059,7 @@ class ServerUI:
     def _mode_rects(self):
         """One button per mode, laid out left to right under the title."""
         rects = []
-        x, width = 32, 132
+        x, width = 32, 116
         for mode in game_rules.MODES:
             rects.append((mode, pygame.Rect(x, 100, width, 34)))
             x += width + 8
@@ -712,8 +1078,9 @@ class ServerUI:
             label = game_rules.MODE_LABELS.get(mode, mode)
             self.text(label, box.center, self.f_body,
                       (235, 244, 255) if active else MUTED, center=True)
+        # the description sits under the Reset button, clear of the buttons
         blurb = game_rules.MODE_BLURBS.get(current, "")
-        self.text(blurb, (32 + 4 * 140 + 8, 110), self.f_small, MUTED)
+        self.text(blurb, (WIN_W - 32, 74), self.f_small, MUTED, right=True)
 
     def _draw_reset_button(self):
         colour = (185, 60, 60) if self.reset_hover else (150, 48, 48)
@@ -725,34 +1092,60 @@ class ServerUI:
 
     def _draw_clients(self, rect):
         srv = self.server
-        joined = srv._joined_clients()
+        humans = srv._joined_clients()
+        online = len([c for c in humans if c.alive])
         self.panel(rect, "CONNECTED CLIENTS")
         self.text("online", (rect.right - 84, rect.y + 20), self.f_small, MUTED)
-        self.text(str(len(joined)), (rect.right - 34, rect.y + 6),
-                  self.f_title, ACCENT)
+        self.text(str(online), (rect.right - 34, rect.y + 6), self.f_title, ACCENT)
 
+        rows = [("human", c) for c in humans]
+        if srv._bot_seated():
+            rows.append(("bot", None))
         y = rect.y + 52
-        if not joined:
+        if not rows:
             self.text("waiting for players to connect...",
                       (rect.x + 16, y + 8), self.f_body, MUTED)
             return
-        for c in joined:
+
+        capacity = 5
+        shown = rows if len(rows) <= capacity else rows[:capacity - 1]
+        hidden = len(rows) - len(shown)
+        now = time.time()
+        for kind, c in shown:
             row = pygame.Rect(rect.x + 10, y, rect.width - 20, 40)
             pygame.draw.rect(self.screen, PANEL_2, row, border_radius=8)
-            is_turn = (c.id == srv.game.current_turn)
+            if kind == "bot":
+                is_turn = srv.game.current_turn == BOT_ID
+                name = srv._bot_name()
+                badge, badge_colour = "COMPUTER", WARN
+                where = ""
+                score = srv.game.scores.get(BOT_ID, 0)
+            else:
+                is_turn = c.id == srv.game.current_turn
+                name = c.name
+                if c.away_since is not None:
+                    left = max(0, int(config.RECONNECT_GRACE - (now - c.away_since)))
+                    badge, badge_colour = "AWAY %ds" % left, WARN
+                elif c.role == "player":
+                    badge, badge_colour = "PLAYER", ACCENT
+                else:
+                    badge, badge_colour = "SPECTATOR", MUTED
+                where = c.addr[0]
+                score = srv.game.scores.get(c.id, 0) if c.role == "player" else None
             if is_turn:
                 pygame.draw.rect(self.screen, GOOD, row, width=2, border_radius=8)
-            self.text(c.name, (row.x + 12, row.y + 9), self.f_body,
-                      GOOD if is_turn else TEXT)
-            badge = "PLAYER" if c.role == "player" else "SPECTATOR"
-            self.text(badge, (row.x + 150, row.y + 12), self.f_small,
-                      ACCENT if c.role == "player" else MUTED)
-            self.text("%s:%d" % c.addr, (row.x + 240, row.y + 12),
-                      self.f_small, MUTED)
-            if c.role == "player":
-                self.text(srv.game.scores.get(c.id, 0),
-                          (row.right - 26, row.y + 9), self.f_body, WARN)
+            self.text(self.fit(name, self.f_body, 132), (row.x + 12, row.y + 9),
+                      self.f_body, GOOD if is_turn else TEXT)
+            self.text(badge, (row.x + 152, row.y + 12), self.f_small, badge_colour)
+            if where:
+                self.text(where, (row.x + 236, row.y + 12), self.f_small, MUTED)
+            if score is not None:
+                self.text(score, (row.right - 12, row.y + 9), self.f_body, WARN,
+                          right=True)
             y += 46
+        if hidden > 0:
+            self.text("+ %d more connected" % hidden, (rect.x + 20, y + 10),
+                      self.f_small, MUTED)
 
     def _draw_match(self, rect):
         srv = self.server
@@ -765,20 +1158,26 @@ class ServerUI:
         phase_colour = {game_rules.PHASE_WAITING: MUTED,
                         game_rules.PHASE_PLAYING: GOOD,
                         game_rules.PHASE_ENDED: WARN}[g.phase]
+        if srv._anyone_away() and g.phase == game_rules.PHASE_PLAYING:
+            phase_text, phase_colour = "paused - player away", WARN
         self.text(phase_text, (rect.x + 16, rect.y + 44), self.f_body, phase_colour)
+        opponent = ("vs %s" % srv._bot_name() if srv._bot_seated()
+                    else "vs another player")
+        self.text(opponent, (rect.right - 16, rect.y + 46), self.f_small, MUTED,
+                  right=True)
 
-        names = {c.id: c.name for c in srv._joined_clients()}
+        names = srv._names()
         self.text("turn", (rect.x + 16, rect.y + 84), self.f_small, MUTED)
-        self.text(names.get(g.current_turn, "-"),
+        self.text(self.fit(names.get(g.current_turn, "-"), self.f_head, 170),
                   (rect.x + 16, rect.y + 102), self.f_head, TEXT)
 
         left = srv._seconds_left()
         colour = BAD if left <= 3 and g.phase == game_rules.PHASE_PLAYING else ACCENT
-        self.text("countdown", (rect.x + 200, rect.y + 84), self.f_small, MUTED)
-        self.text("00:00:%02d" % left, (rect.x + 200, rect.y + 98),
+        self.text("countdown", (rect.x + 220, rect.y + 84), self.f_small, MUTED)
+        self.text("00:00:%02d" % left, (rect.x + 220, rect.y + 98),
                   self.f_title, colour)
 
-        if g.mode == game_rules.MODE_SWEEPER:
+        if g.bombs_are_bad:
             # Bombs are the hazard here, so the finish line is safe ground.
             self.text("safe slots left", (rect.x + 16, rect.y + 150),
                       self.f_small, MUTED)
@@ -790,71 +1189,99 @@ class ServerUI:
                       (rect.x + 16, rect.y + 168), self.f_head, TEXT)
 
         if g.phase == game_rules.PHASE_ENDED:
-            self.text("rematch votes", (rect.x + 200, rect.y + 150),
+            self.text("rematch votes", (rect.x + 220, rect.y + 150),
                       self.f_small, MUTED)
             self.text("%d / %d" % (len(srv.rematch_votes), len(g.players)),
-                      (rect.x + 200, rect.y + 168), self.f_head, WARN)
+                      (rect.x + 220, rect.y + 168), self.f_head, WARN)
 
         y = rect.y + 216
         for pid in g.players:
-            self.text("%-14s %d" % (names.get(pid, "?"), g.scores.get(pid, 0)),
-                      (rect.x + 16, y), self.f_body,
+            label = self.fit(names.get(pid, "?"), self.f_body, 250)
+            self.text(label, (rect.x + 16, y), self.f_body,
                       GOOD if pid == g.last_winner else TEXT)
+            self.text(g.scores.get(pid, 0), (rect.x + 290, y), self.f_body, WARN,
+                      right=False)
             y += 26
+
+    # -- the admin board: every slot, bombs included ---------------------
+    @staticmethod
+    def _fit_layers(layers, rows, cols, box):
+        """Biggest slot size, and layers per row, that fit inside `box`."""
+        label_h = 16 if layers > 1 else 0
+        for size in range(26, 5, -1):
+            gap = 2 if size < 14 else 3
+            w = cols * (size + gap) - gap
+            h = rows * (size + gap) - gap
+            for per_row in range(layers, 0, -1):
+                lines = math.ceil(layers / per_row)
+                need_w = per_row * w + (per_row - 1) * 10
+                need_h = lines * (h + label_h) + (lines - 1) * 8
+                if need_w <= box.width and need_h <= box.height:
+                    return size, gap, per_row
+        return 6, 2, layers
 
     def _draw_board(self, rect):
         """Admin view of the board - the only place unfound bombs are shown."""
         g = self.server.game
         self.panel(rect, "BOARD  (server view)")
         view = g.board_view(reveal_all=True)
+        box = pygame.Rect(rect.x + 16, rect.y + 44, rect.width - 32,
+                          rect.height - 44 - 30)
         if g.is_3d:
-            # The cube is drawn as its layers, side by side, so the whole
-            # board is visible at once rather than one slice at a time.
-            size, gap = 20, 3
-            span = len(view[0][0]) * (size + gap)
+            layers, rows, cols = g.dims
+            size, gap, per_row = self._fit_layers(layers, rows, cols, box)
+            w = cols * (size + gap) - gap
+            h = rows * (size + gap) - gap
             for index, layer in enumerate(view):
-                x = rect.x + 16 + index * (span + 16)
-                self.text("layer %d" % index, (x, rect.y + 42), self.f_small, MUTED)
-                self._draw_slots(layer, x, rect.y + 62, size, gap)
-            self._draw_legend(rect.x + 16, rect.y + 74 + span)
+                x = box.x + (index % per_row) * (w + 10)
+                y = box.y + (index // per_row) * (h + 16 + 8)
+                self.text("layer %d" % index, (x, y - 1), self.f_small, MUTED)
+                self._draw_slots(layer, x, y + 16, size, gap)
         else:
-            size, gap = 28, 4
-            self._draw_slots(view, rect.x + 16, rect.y + 44, size, gap)
-            self._draw_legend(rect.x + 16 + g.grid_size * (size + gap) + 20,
-                              rect.y + 48)
+            rows, cols = g.dims
+            size, gap, _ = self._fit_layers(1, rows, cols, box)
+            self._draw_slots(view, box.x, box.y, size, gap)
+        self._draw_legend(rect.x + 16, rect.bottom - 26)
 
     def _draw_slots(self, rows, ox, oy, size, gap):
-        font = self.f_cell if size >= 24 else self.f_small
+        font = self.f_cell if size >= 26 else self.f_small
         for r, row in enumerate(rows):
             for c, value in enumerate(row):
                 cell = pygame.Rect(ox + c * (size + gap), oy + r * (size + gap),
                                    size, size)
                 if value is None:
-                    pygame.draw.rect(self.screen, HIDDEN_CELL, cell, border_radius=4)
+                    pygame.draw.rect(self.screen, HIDDEN_CELL, cell, border_radius=3)
                 elif value == game_rules.HIDDEN_BOMB:
-                    pygame.draw.rect(self.screen, HIDDEN_CELL, cell, border_radius=4)
-                    pygame.draw.circle(self.screen, (120, 70, 70), cell.center,
-                                       max(3, size // 6))
+                    pygame.draw.rect(self.screen, HIDDEN_CELL, cell, border_radius=3)
+                    pygame.draw.circle(self.screen, (150, 84, 84), cell.center,
+                                       max(2, size // 5))
                 elif value == game_rules.BOMB:
-                    pygame.draw.rect(self.screen, (150, 48, 48), cell, border_radius=4)
+                    pygame.draw.rect(self.screen, (150, 48, 48), cell, border_radius=3)
                     pygame.draw.circle(self.screen, (255, 220, 220), cell.center,
-                                       max(4, size // 5))
+                                       max(2, size // 4))
                 else:
-                    pygame.draw.rect(self.screen, PANEL_2, cell, border_radius=4)
-                    label = font.render(str(value), True,
-                                        MUTED if value == 0 else TEXT)
-                    self.screen.blit(label, label.get_rect(center=cell.center))
+                    pygame.draw.rect(self.screen, PANEL_2, cell, border_radius=3)
+                    if size >= 18:              # too small to read digits below this
+                        label = font.render(str(value), True,
+                                            MUTED if value == 0 else TEXT)
+                        self.screen.blit(label, label.get_rect(center=cell.center))
+                    elif value:
+                        inner = cell.inflate(-size // 2, -size // 2)
+                        pygame.draw.rect(self.screen, (98, 112, 138), inner,
+                                         border_radius=2)
 
     def _draw_legend(self, x, y):
-        self.text("found bomb", (x, y), self.f_small, BAD)
-        self.text("hidden bomb", (x, y + 24), self.f_small, MUTED)
-        self.text("opened slot", (x, y + 48), self.f_small, TEXT)
+        for label, colour in (("found bomb", BAD), ("hidden bomb", MUTED),
+                              ("opened slot", TEXT)):
+            self.text(label, (x, y), self.f_small, colour)
+            x += 118
 
     def _draw_log(self, rect):
         self.panel(rect, "ACTIVITY")
         y = rect.y + 44
         for line in list(self.server.log):
-            self.text(line, (rect.x + 16, y), self.f_small, MUTED)
+            self.text(self.fit(line, self.f_small, rect.width - 32),
+                      (rect.x + 16, y), self.f_small, MUTED)
             y += 19
 
 

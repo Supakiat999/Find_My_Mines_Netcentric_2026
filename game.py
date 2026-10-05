@@ -83,6 +83,8 @@ class Game:
 
         self.players = []        # ordered player ids; index 0 and 1 play
         self.scores = {}         # player id -> score for the current match
+        self.stats = {}          # player id -> this match's counters
+        self.hints_left = {}     # player id -> coach questions still allowed
         self.phase = PHASE_WAITING
         self.current_turn = None
         self.last_winner = None  # winner of the previous match, starts next
@@ -123,6 +125,13 @@ class Game:
         return config.TURN_SECONDS
 
     @property
+    def hints_weighted(self):
+        """True when hints use the two-ring 2/1 weighting."""
+        return (self.mode == MODE_RADIUS2
+                or (self.mode == MODE_CUSTOM
+                    and self.custom["hints"] == "radius2"))
+
+    @property
     def bombs_are_bad(self):
         """True when opening a bomb is a mistake rather than the point."""
         return (self.mode == MODE_SWEEPER
@@ -155,6 +164,8 @@ class Game:
         self.flags = {}          # slot -> the player who planted the flag
         self.hints = {}          # slot -> what it will show when opened
         self.bombs_found = 0
+        self.bomb_owners = {}    # slot -> the player who opened that bomb
+        self.last_move = None    # {"cell": slot, "by": player} for highlighting
 
     def _place_bombs(self):
         """Scatter bombs at random, then work out every slot's hint."""
@@ -163,10 +174,7 @@ class Game:
 
     def _compute_hints(self):
         for cell in self.cells():
-            weighted = (self.mode == MODE_RADIUS2
-                        or (self.mode == MODE_CUSTOM
-                            and self.custom["hints"] == "radius2"))
-            if weighted:
+            if self.hints_weighted:
                 # A bomb touching the slot counts 2, one a ring further out
                 # counts 1 - so every bomb influences 24 slots, not 8.
                 self.hints[cell] = (2 * self._bombs_at(cell, 1)
@@ -214,6 +222,28 @@ class Game:
         rows, cols = self.dims
         return [[value_at((r, c)) for c in range(cols)] for r in range(rows)]
 
+    def owner_view(self):
+        """Who opened each bomb, as JSON-friendly pairs."""
+        return [{"cell": list(cell), "by": owner}
+                for cell, owner in self.bomb_owners.items()]
+
+    def last_move_view(self):
+        if not self.last_move:
+            return None
+        return {"cell": list(self.last_move["cell"]),
+                "by": self.last_move["by"]}
+
+    def public_info(self):
+        """Everything a player at the table can see - and nothing more.
+
+        The computer opponent and the coach are handed this and only this,
+        so neither can peek at the hidden bombs.
+        """
+        return {"view": self.board_view(), "dims": self.dims,
+                "weighted": self.hints_weighted,
+                "bombs_left": self.bombs_left,
+                "bombs_are_bad": self.bombs_are_bad}
+
     def flag_view(self):
         """Flags as JSON-friendly pairs of slot and owner."""
         return [{"cell": list(cell), "by": owner}
@@ -227,6 +257,62 @@ class Game:
             self.scores.setdefault(pid, 0)
         if self.current_turn not in self.players:
             self.current_turn = None
+
+    def rename_player(self, old, new):
+        """Hand a seat to a new id - a player coming back on a new socket."""
+        if old == new:
+            return
+        self.players = [new if p == old else p for p in self.players]
+        for table in (self.scores, self.stats, self.hints_left):
+            if old in table:
+                table[new] = table.pop(old)
+        if self.current_turn == old:
+            self.current_turn = new
+        if self.last_winner == old:
+            self.last_winner = new
+        for cell, owner in list(self.flags.items()):
+            if owner == old:
+                self.flags[cell] = new
+        for cell, owner in list(self.bomb_owners.items()):
+            if owner == old:
+                self.bomb_owners[cell] = new
+        if self.last_move and self.last_move["by"] == old:
+            self.last_move["by"] = new
+
+    def use_hint(self, player_id):
+        """Spend one coach question.  False when none are left."""
+        if self.hints_left.get(player_id, 0) <= 0:
+            return False
+        self.hints_left[player_id] -= 1
+        return True
+
+    def _stat(self, player_id):
+        return self.stats.setdefault(player_id, {
+            "picks": 0, "kept": 0, "chain": 0, "best_chain": 0})
+
+    def _record(self, player_id, cell, kept_turn):
+        """Book-keeping for one pick.  A pick that keeps your turn extends
+        your chain; one that hands it over ends it."""
+        stat = self._stat(player_id)
+        stat["picks"] += 1
+        if kept_turn:
+            stat["kept"] += 1
+            stat["chain"] += 1
+            stat["best_chain"] = max(stat["best_chain"], stat["chain"])
+        else:
+            stat["chain"] = 0
+        self.last_move = {"cell": cell, "by": player_id}
+
+    def match_stats(self):
+        """Per-player numbers for the end-of-match screen."""
+        rows = []
+        for pid in self.players:
+            stat = self._stat(pid)
+            picks = stat["picks"]
+            rate = round(100.0 * stat["kept"] / picks) if picks else 0
+            rows.append({"id": pid, "picks": picks,
+                         "best_chain": stat["best_chain"], "rate": rate})
+        return rows
 
     def reset_scores(self):
         for pid in self.scores:
@@ -250,6 +336,9 @@ class Game:
         # Every match starts level: scores belong to the match, not the
         # session, so a rematch is a fresh contest.
         self.reset_scores()
+        self.stats = {pid: {"picks": 0, "kept": 0, "chain": 0,
+                            "best_chain": 0} for pid in self.players}
+        self.hints_left = {pid: config.HINTS_PER_MATCH for pid in self.players}
         if first_player not in self.players:
             first_player = self.rng.choice(self.players)
         self.current_turn = first_player
@@ -287,8 +376,10 @@ class Game:
             self.revealed[cell] = BOMB
             self.bombs_found += 1
             self.scores[player_id] = self.scores.get(player_id, 0) + 1
+            self.bomb_owners[cell] = player_id
         else:
             self.revealed[cell] = self.hints[cell]
+        self._record(player_id, cell, kept_turn=is_bomb)
 
         match_over = self.bombs_found >= self.bomb_count
         if match_over:
@@ -312,12 +403,15 @@ class Game:
         if cell in self.bombs:
             self.revealed[cell] = BOMB
             self.bombs_found += 1
+            self.bomb_owners[cell] = player_id
+            self._record(player_id, cell, kept_turn=False)
             self.pass_turn()
             return {"ok": True, "is_bomb": True, "value": BOMB, "opened": 0,
                     "turn_changed": True, "match_over": False}
 
         opened = self._open_region(cell)
         self.scores[player_id] = self.scores.get(player_id, 0) + len(opened)
+        self._record(player_id, cell, kept_turn=True)
         match_over = self.safe_left == 0
         if match_over:
             self._finish_match()
