@@ -9,7 +9,8 @@ between the two branches actually is.
 
 | Branch | Tag | What it is |
 |---|---|---|
-| **`main`** | `v1-demo` | The version demonstrated in class. The complete game, nothing more. |
+| **`main`** | `v4-kk-plus` | The newest version, KK Plus. Until KK Plus was merged in, `main` held the class demo. |
+| *(snapshot only)* | `v1-demo` | The version demonstrated in class. The complete game, nothing more. |
 | **`enhanced`** | `v2-enhanced` | The same game, plus four aids for getting connected across machines. |
 | **`kk`** | `v3-kk` | Everything in `enhanced`, plus three extra game modes and a per-match score reset. |
 | **`kk-plus`** | `v4-kk-plus` | Everything in `kk`, plus a computer opponent, an AI coach, chat, a hall of fame, sound, themes and automatic reconnecting. |
@@ -19,9 +20,13 @@ turn clock. `main`, `enhanced` and `kk` share one wire protocol; `kk-plus`
 extends it, and mixing `kk-plus` with an older version has not been tested - use
 the same version on every computer.
 
-`main` is the branch to read if you want the assignment; `enhanced` is the one to
-use if you are setting the game up across laptops and the network is fighting
-you.
+**KK Plus was merged into `main`** with an ordinary merge commit; no history was
+rewritten. The old tip of `main` is the merge's first parent, and the `v1-demo`
+snapshot still marks exactly what was demonstrated in class.
+
+Read `v1-demo` if you want just the assignment; `enhanced` is the one to use if
+you are setting the game up across laptops and the network is fighting you;
+`main` has everything.
 
 ---
 
