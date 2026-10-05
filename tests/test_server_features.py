@@ -304,5 +304,21 @@ assert new_id2 not in game.players
 ok(17, "no match starts around an absent player; after the grace the seat is released")
 leave(bob)
 
+# =====================================================================
+# 6. ranked mode toggle mid-game restarts cleanly
+# =====================================================================
+ids, alice, bob = table("Ann", "Ben")
+assert srv.ranked is True
+pick(ids[game.current_turn], open_slot())
+wait(lambda: len(game.revealed) > 0, "first slot to open")
+
+# Toggle to casual mid-game
+alice.send(protocol.SET_RANKED, ranked=False)
+wait(lambda: not srv.ranked and game.phase == g.PHASE_PLAYING and len(game.revealed) == 0,
+     "match restarted into casual mode")
+assert srv.ranked is False
+ok(18, "switching ranked/casual mid-game restarts the match on a fresh board")
+leave(alice, bob)
+
 run.stop()
 print("\nALL SERVER-FEATURE CHECKS PASSED")

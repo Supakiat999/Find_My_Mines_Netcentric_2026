@@ -82,3 +82,22 @@ ELO_K_FACTOR = 32                    # Sensitivity factor
 ELO_MINIMUM = 100                    # Floor rating
 ELO_RANKED_MODES = ("classic", "radius2", "sweeper", "cube")
 
+# Tiers: (name, min_rating, rgb_tuple)
+ELO_TIERS = [
+    ("Bronze",   0,    (195, 130, 80)),    # Warm Bronze
+    ("Silver",   1100, (185, 195, 205)),   # Bright Silver
+    ("Gold",     1300, (240, 185, 50)),    # Radiant Gold
+    ("Platinum", 1500, (65, 215, 195)),    # Cyan Platinum
+    ("Diamond",  1700, (170, 130, 250)),   # Violet Diamond
+    ("Master",   2000, (255, 80, 120)),    # Crimson Master
+]
+
+# Placement / Provisional Calibration
+ELO_PROVISIONAL_MATCHES = 5          # Number of placement matches
+ELO_PROVISIONAL_K = 64               # Accelerated K-factor for new players
+
+# Win Streak Bonus
+ELO_STREAK_THRESHOLD = 3             # Streak required for bonus
+ELO_STREAK_BONUS = 6                 # Flat bonus Elo added per win while on streak
+
+

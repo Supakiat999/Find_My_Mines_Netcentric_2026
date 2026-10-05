@@ -101,6 +101,7 @@ class Server:
 
         self.bot_level = "off"            # off | easy | medium | hard
         self.bot_ready_at = None          # when the computer will play its move
+        self.ranked = True                # whether matches affect Elo ratings
         self.rng = random.Random()
 
         self.chat = deque(maxlen=CHAT_HISTORY)
@@ -347,7 +348,14 @@ class Server:
                 record = self.board.record_of(name)
                 entry["record"] = {k: record[k] for k in
                                    ("wins", "losses", "draws", "points")}
-                entry["elo"] = self.board.get_elo(name, g.mode)
+                elo_val = self.board.get_elo(name, g.mode)
+                entry["elo"] = elo_val
+                tier_info = stats_mod.get_tier(elo_val)
+                entry["tier"] = tier_info[0]
+                entry["tier_color"] = tier_info[1]
+                entry["peak_elo"] = self.board.get_peak_elo(name, g.mode)
+                entry["provisional"] = self.board.is_provisional(name, g.mode)
+                entry["mode_matches"] = self.board.get_mode_matches(name, g.mode)
             players.append(entry)
         away = self._away_payload()
         return {
@@ -377,6 +385,7 @@ class Server:
             "bot_seated": self._bot_seated(),
             "away": away,
             "paused": bool(away) and g.phase == game_rules.PHASE_PLAYING,
+            "ranked": self.ranked,
             "leaderboard": self.board.top(5, mode=g.mode),
         }
 
@@ -529,7 +538,7 @@ class Server:
                 outcome = "win" if p["id"] == g.last_winner else "loss"
             results.append({"name": p["name"], "result": outcome,
                             "points": p["score"]})
-        elo_changes = self.board.record_match(results, mode=g.mode)
+        elo_changes = self.board.record_match(results, mode=g.mode, ranked=self.ranked)
 
         elo_payload = {}
         for p in players:
@@ -547,6 +556,7 @@ class Server:
             players=players,
             stats=detail,
             mode=g.mode,
+            ranked=self.ranked,
             elo_changes=elo_payload,
             leaderboard=self.board.top(5, mode=g.mode),
         )
@@ -554,9 +564,17 @@ class Server:
             parts = []
             for name, ch in elo_changes.items():
                 sign = "+" if ch["delta"] > 0 else ""
-                parts.append("%s (%s%d -> %d)" % (name, sign, ch["delta"], ch["after"]))
+                extra = []
+                if ch.get("streak_bonus"):
+                    extra.append("+%d streak" % ch["streak_bonus"])
+                if ch.get("promoted"):
+                    extra.append("PROMOTED TO %s!" % ch["promoted"].upper())
+                extra_str = (" [%s]" % ", ".join(extra)) if extra else ""
+                parts.append("%s (%s%d -> %d)%s" % (name, sign, ch["delta"], ch["after"], extra_str))
             self._announce("Elo: " + " | ".join(parts), system=True)
             self.say("Elo: %s" % " | ".join(parts))
+        elif not self.ranked and len(results) == 2:
+            self._announce("Casual match completed - no rating changes.", system=True)
         if g.last_winner is None:
             self.say("Match over - draw")
         elif g.last_winner in names:
@@ -642,6 +660,24 @@ class Server:
             self._on_hint(rec)
         elif kind == protocol.SET_BOT:
             self._on_set_bot(rec, msg)
+        elif kind == protocol.SET_RANKED:
+            self._on_set_ranked(rec, msg)
+
+    def _on_set_ranked(self, rec, msg):
+        ranked = bool(msg.get("ranked", True))
+        if ranked == self.ranked:
+            return
+        self.ranked = ranked
+        tag = "Ranked" if self.ranked else "Casual"
+        self.say("%s changed room to %s" % (rec.name, tag))
+        self._announce("Room match type is now %s" % tag, system=True)
+        if self.game.phase != game_rules.PHASE_WAITING:
+            self.first_match_done = False
+            self.game.reset_scores()
+            self._halt("Match restarted - match mode changed to %s" % tag)
+            self._broadcast(protocol.SERVER_RESET)
+            self._maybe_autostart()
+        self.push_state()
 
     def _on_join(self, rec, msg):
         if rec.name:

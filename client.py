@@ -276,7 +276,9 @@ class ClientUI:
         self.cards = self._side_layout()
         self.rematch_rect = pygame.Rect(CX - 100, 601, 200, 52)
         self.sound_rect = pygame.Rect(24, 20, 112, 32)
+        self.ranked_rect = pygame.Rect(144, 20, 130, 32)
         self.theme_rect = pygame.Rect(GAME_W - 24 - 140, 20, 140, 32)
+        self.match_end_time = 0.0
 
     # ------------------------------------------------------------------
     # small helpers
@@ -457,6 +459,7 @@ class ClientUI:
                 self.sound.play("tick")
         elif kind == protocol.MATCH_END:
             self.match_end = msg
+            self.match_end_time = time.time()
             self.leaderboard = msg.get("leaderboard", self.leaderboard)
             if self.role != "player" or msg.get("draw"):
                 self.sound.play("draw")
@@ -741,6 +744,13 @@ class ClientUI:
         self._remember()
         self.say("Sound off" if self.sound.muted else "Sound on", 1.5)
 
+    def _toggle_ranked(self):
+        if self.role != "player":
+            self.say("Only players can change match mode", 1.5)
+            return
+        curr = (self.state or {}).get("ranked", True)
+        self.net.send(protocol.SET_RANKED, ranked=not curr)
+
     def _next_theme(self):
         apply_theme(themes.next_theme(THEME_NAME))
         self._remember()
@@ -794,6 +804,9 @@ class ClientUI:
         if event.button == 1:
             if self.sound_rect.collidepoint(event.pos):
                 self._toggle_sound()
+                return
+            if self.ranked_rect.collidepoint(event.pos):
+                self._toggle_ranked()
                 return
             if self.theme_rect.collidepoint(event.pos):
                 self._next_theme()
@@ -989,14 +1002,16 @@ class ClientUI:
             mine = row["name"] == next((p["name"] for p in self.players
                                         if p["id"] == self.my_id), None)
             self.text("%d" % rank, (card.x + 14, y), self.f_small, MUTED)
-            self.text(self.fit(row["name"], self.f_small, 130),
+            self.text(self.fit(row["name"], self.f_small, 110),
                       (card.x + 34, y), self.f_small, GOOD if mine else TEXT)
             elo_val = row.get("elo")
+            tier_name = row.get("tier", "Bronze")
+            tier_col = row.get("tier_color", WARN)
             if elo_val is not None:
-                stat_str = "%d  %dW %dL" % (elo_val, row["wins"], row["losses"])
+                stat_str = "%s %d  %dW %dL" % (tier_name[:4].upper(), elo_val, row["wins"], row["losses"])
             else:
                 stat_str = "%dW %dL  %d" % (row["wins"], row["losses"], row["points"])
-            self.text(stat_str, (card.right - 14, y), self.f_small, WARN, right=True)
+            self.text(stat_str, (card.right - 14, y), self.f_small, tier_col if elo_val else WARN, right=True)
             y += 22
 
     def _chat_lines_wrapped(self, width):
@@ -1154,6 +1169,9 @@ class ClientUI:
     def _draw_titlebar(self):
         self._button(self.sound_rect, "Sound: off" if self.sound.muted else "Sound: on",
                      active=not self.sound.muted)
+        ranked = (self.state or {}).get("ranked", True)
+        self._button(self.ranked_rect, "Ranked" if ranked else "Casual",
+                     active=ranked)
         self._button(self.theme_rect, "Theme: %s" % THEME_LABEL)
 
     def _draw_modes(self):
@@ -1302,8 +1320,16 @@ class ClientUI:
                 elo_val = p.get("elo")
                 mode = (self.state or {}).get("mode", "classic")
                 ranked_modes = getattr(config, "ELO_RANKED_MODES", ("classic", "radius2", "sweeper", "cube"))
-                if elo_val is not None and mode in ranked_modes and not p.get("bot"):
-                    name += " [%d]" % elo_val
+                is_ranked = (self.state or {}).get("ranked", True)
+                if not is_ranked and not p.get("bot"):
+                    name += " [Casual]"
+                elif elo_val is not None and mode in ranked_modes and not p.get("bot"):
+                    tier_name = p.get("tier", "Bronze")
+                    if p.get("provisional"):
+                        matches_done = p.get("mode_matches", 0)
+                        name += " [%s · Prov %d/5 · %d]" % (tier_name, matches_done, elo_val)
+                    else:
+                        name += " [%s · %d]" % (tier_name, elo_val)
                 score = p["score"]
                 active = p["id"] == current
                 colour = GOOD if active else (WARN if p["id"] in away else TEXT)
@@ -1540,17 +1566,33 @@ class ClientUI:
         left, right = card.x + 30, card.right - 30
         y = card.y + 108
         elo_changes = end.get("elo_changes", {})
+        is_ranked_match = end.get("ranked", True)
+        elapsed = time.time() - getattr(self, "match_end_time", time.time())
+        progress = min(1.0, max(0.0, elapsed / 1.0))
+        eased = 1.0 - (1.0 - progress) ** 3
+
         for p in players:
             label = "%s%s" % (p["name"], "  (you)" if p["id"] == self.my_id else "")
             ch = elo_changes.get(p["id"]) or elo_changes.get(str(p["id"])) or elo_changes.get(p["name"])
-            if ch:
+            if ch and is_ranked_match:
+                before = ch.get("before", 1200)
+                after = ch.get("after", 1200)
                 delta = ch.get("delta", 0)
-                after = ch.get("after", 0)
+                cur_display = int(before + (after - before) * eased)
                 sign = "+" if delta > 0 else ""
                 col = GOOD if delta > 0 else (BAD if delta < 0 else WARN)
-                elo_str = "%s%d ELO (%d)" % (sign, delta, after)
+                elo_str = "%s%d ELO (%d)" % (sign, delta, cur_display)
+                if progress >= 1.0:
+                    if ch.get("promoted"):
+                        elo_str += " ▲ %s!" % ch["promoted"].upper()
+                    elif ch.get("streak_bonus"):
+                        elo_str += " (+%d streak!)" % ch["streak_bonus"]
+                self.text(self.fit(label, self.f_head, 210), (left, y), self.f_head, TEXT)
+                self.text(elo_str, (right - 65, y + 2), self.f_small, col, right=True)
+                self.text(p["score"], (right, y), self.f_head, WARN, right=True)
+            elif not is_ranked_match and len(players) >= 2:
                 self.text(self.fit(label, self.f_head, 240), (left, y), self.f_head, TEXT)
-                self.text(elo_str, (right - 70, y + 2), self.f_small, col, right=True)
+                self.text("Casual", (right - 65, y + 2), self.f_small, MUTED, right=True)
                 self.text(p["score"], (right, y), self.f_head, WARN, right=True)
             else:
                 self.text(self.fit(label, self.f_head, 360), (left, y), self.f_head, TEXT)
