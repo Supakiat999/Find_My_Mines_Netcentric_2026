@@ -19,7 +19,8 @@ per bomb; the match ends when all 11 are found.
 | Server — `config.py` · `protocol.py` · `game.py` · `server.py` | Done, verified by a headless socket test |
 | Client — `client.py` | Done, verified by two clients playing a full match |
 | Connection aids | Live server address, browser check, address argument |
-| Game modes (this branch) | Classic, Radius 2, Minesweeper, 3D Cube |
+| Game modes | Classic, Radius 2, Minesweeper, 3D Cube, Custom |
+| AI, chat, stats, sound, themes, reconnect (this branch) | Done, 83 automated checks |
 
 Step-by-step setup, including the two-computer demo, is in
 **[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
@@ -28,25 +29,70 @@ Step-by-step setup, including the two-computer demo, is in
 
 ## Versions - pick one
 
-Three versions live on three branches. **The game itself is identical in all
-three** - same rules, same screens, same wire protocol - so a client from one
-branch plays perfectly well against a server from another. What differs is what
-is built around the game.
+Four versions live on four branches, and each contains everything in the one
+before it. The core game - the rules, the board, the turn clock - is the same
+throughout; what changes is what is built around it. Use the **same version on
+every computer** in a game. (The first three share one protocol. KK Plus extends
+it, and mixing KK Plus with the older ones has not been tested.)
 
 | Version | Branch | Snapshot | What it is |
 |---|---|---|---|
 | **Classic** | [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/main) | [`v1-demo`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v1-demo) | The version demonstrated in class. The assignment and nothing else. |
 | **Enhanced** | [`enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/enhanced) | [`v2-enhanced`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v2-enhanced) | Classic plus four aids for connecting across machines. |
 | **KK** | [`kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk) | [`v3-kk`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v3-kk) | Enhanced plus five game modes, a custom game, and per-match scoring. |
+| **KK Plus** | [`kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/kk-plus) | [`v4-kk-plus`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026/tree/v4-kk-plus) | KK plus a computer opponent, an AI coach, chat, a hall of fame, sound, themes and automatic reconnecting. |
 
 Click a branch above to browse it on GitHub, or switch locally:
 
 ```bash
-git checkout kk
+git checkout kk-plus
 ```
 
-You are reading the **kk** branch.  The front page on
+You are reading the **kk-plus** branch.  The front page on
 [`main`](https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026#readme) describes every version side by side.
+
+---
+
+## KK Plus features (`kk-plus` branch)
+
+Everything in KK, plus eight more features. **Two are AI.**
+
+| # | Feature | What it does |
+|---|---|---|
+| 1 | **Play the computer** (AI) | The OPPONENT card on the right picks Player, Easy, Medium or Hard. With one person connected the computer takes the other seat and plays by itself after a short pause, in every mode. It always agrees to a rematch, steps aside when a second person joins, and comes back if they leave. |
+| 2 | **AI coach** (AI) | On your turn, **Ask the coach** (or press **H**) names the best slot and tints every covered slot with its odds. Three questions per player per match. On boards too big to count exactly the answer is marked as an estimate. |
+| 3 | **Chat** | A chat panel for players and spectators, with quick replies (GG, Nice!, Oops, Again?). Messages are trimmed to 120 characters and rate-limited; people who join late see recent history. |
+| 4 | **Hall of fame and match stats** | The end screen shows picks, best chain and hit rate for each player. Wins, losses and points are kept per nickname in `stats.json`, so the table survives restarts. The computer is never listed. |
+| 5 | **Sound effects** | Slot clicks, a chime for a bomb you want, a thump for one you do not, a ding on your turn, a warning tick in the last three seconds, and win/lose/draw tunes. All synthesised from maths - there are no audio files. **M** mutes. |
+| 6 | **Themes** | Dark, Light and a colour-blind-safe palette (**T** or the Theme button). Your choice and the mute setting are remembered in `client_prefs.json`. |
+| 7 | **Automatic reconnecting** | If your Wi-Fi drops, the server holds your seat, score and turn for 30 seconds and pauses the match, and your window reconnects by itself. A token proves it is you, so nobody else can take the seat. |
+| 8 | **Scale-to-fit window** | The game is drawn on a fixed canvas and scaled to your screen, so it fits small laptops and can be resized freely. Clicks are mapped back correctly. |
+
+Also new: each bomb is ringed in the colour of the player who found it (with a
+small 1 or 2 for colour-blind players), the last move is outlined, and newly
+opened slots animate.
+
+**Keys:** `Enter` type in the chat - `M` sound - `T` theme - `H` ask the coach -
+right-click flags a slot.
+
+**How the AI works.** Every opened number is a constraint ("exactly two of these
+neighbours are bombs"). The covered slots those numbers touch are split into
+independent groups and each is solved exactly by backtracking, then the groups
+are weighted by the ways the remaining bombs can fall elsewhere. That gives a
+real probability for every covered slot, not a guess. Positions too large to
+enumerate (the cube, big custom boards) fall back to sampling many valid layouts.
+The engine in `ai.py` is handed only the visible board, so neither the computer
+nor the coach can see hidden bombs. Measured results are in
+[CHANGELOG.md](CHANGELOG.md).
+
+### Running the tests
+
+```bash
+python tests/run_all.py
+```
+
+Seven headless suites, 83 checks - no window opens and no sound plays. Run one
+with `python tests/run_all.py ai`.
 
 ---
 
@@ -98,6 +144,11 @@ off from your opponent.
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
 | `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
 | `requirements.txt` | The one dependency, pygame. |
+| `ai.py` | The probability engine behind the computer opponent and the coach. Sees only the visible board. |
+| `stats.py` | The hall of fame, saved to `stats.json`. |
+| `sound.py` | Sound effects, synthesised from maths - no audio files. |
+| `themes.py` | The three colour themes, and the contrast measure the tests use. |
+| `tests/` | Seven headless test suites. Run them with `python tests/run_all.py`. |
 | `PLAY-Windows.bat` / `PLAY-Mac.command` | Double-click launchers for players - check Python, install pygame, ask for the address. |
 | `HOST-Windows.bat` / `HOST-Mac.command` | Double-click launchers that start the server. |
 | `ARCHITECTURE.md` | How the system works layer by layer, from Wi-Fi frames up to the game rules — written for presenting in class. |

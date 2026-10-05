@@ -202,6 +202,34 @@ hotspot is the reliable fallback for the demo, so set one up in advance.
 - A third person can connect and watch — they appear in the ONLINE list at the
   bottom and follow the board, but cannot click.
 
+## The extras (KK Plus)
+
+- **Play alone:** in the OPPONENT card on the right, pick Easy, Medium or Hard.
+  Pick Player to wait for a friend instead. It only works while one person is
+  connected.
+- **AI coach:** on your turn press **Ask the coach** (or **H**). The best slot is
+  outlined and every covered slot shows its odds. You get three questions per
+  match; **Odds** turns the tint on and off.
+- **Chat:** press **Enter** or click the box, type, press Enter again. The four
+  buttons send quick replies. Click anywhere else to stop typing.
+- **Keys:** `M` sound on/off - `T` theme - `H` coach - right-click flags a slot.
+- **If your Wi-Fi drops:** do nothing. The match pauses, your seat is held for 30
+  seconds and the window reconnects by itself.
+- **Small screen?** The window scales itself to fit. You can also drag its edges.
+
+Your theme, your mute setting and the hall of fame are saved next to the game in
+`client_prefs.json` and `stats.json`. They are yours - delete them any time to
+start fresh.
+
+## Running the tests
+
+```bash
+python tests/run_all.py
+```
+
+No window opens and no sound plays. It takes about two minutes, most of it the AI
+accuracy check. To run just one part: `python tests/run_all.py ai`.
+
 ## The server window
 
 - **CONNECTED CLIENTS** — how many are online and who they are
