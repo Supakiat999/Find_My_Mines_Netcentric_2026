@@ -185,6 +185,15 @@ sits in the second seat when exactly one person is connected, takes its turn by
 itself after a short pause, always agrees to a rematch, steps aside when a second
 person joins and returns if they leave. It is never added to the hall of fame.
 
+#### Update: the trained model plays the computer
+
+Each mode now has a reinforcement-learning model (`bot/`), and Easy / Medium /
+Hard are that one model at three temperatures, chosen by `bot.calibrate` so that
+medium takes about 1.2x and easy about 1.7x the turns of hard. The start screen
+offers 2 Players / Easy / Medium / Hard, sent with the join, and the OPPONENT
+card switches it mid-game. The `ai.py` solver remains the coach, and plays the
+computer when a mode has no trained model (no torch, no weights, custom boards).
+
 ### The AI coach
 
 Ask on your turn and it names the best slot and tints every covered slot with its

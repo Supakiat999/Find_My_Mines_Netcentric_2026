@@ -61,7 +61,7 @@ Everything in KK, plus eight more features. **Two are AI.**
 
 | # | Feature | What it does |
 |---|---|---|
-| 1 | **Play the computer** (AI) | The OPPONENT card on the right picks Player, Easy, Medium or Hard. With one person connected the computer takes the other seat and plays by itself after a short pause, in every mode. It always agrees to a rematch, steps aside when a second person joins, and comes back if they leave. |
+| 1 | **Play the computer** (AI) | Choose **2 Players, Easy, Medium or Hard** on the start screen, or switch any time on the OPPONENT card on the right. Each mode has one trained model (see [Training the bots](#training-the-bots)); the levels are that same model played looser or tighter. With one person connected the computer takes the other seat and plays by itself after a short pause, in every mode. It always agrees to a rematch, steps aside when a second person joins, and comes back if they leave. |
 | 2 | **AI coach** (AI) | On your turn, **Ask the coach** (or press **H**) names the best slot and tints every covered slot with its odds. Three questions per player per match. On boards too big to count exactly the answer is marked as an estimate. |
 | 3 | **Chat** | A chat panel for players and spectators, with quick replies (GG, Nice!, Oops, Again?). Messages are trimmed to 120 characters and rate-limited; people who join late see recent history. |
 | 4 | **Hall of fame and match stats** | The end screen shows picks, best chain and hit rate for each player. Wins, losses and points are kept per nickname in `stats.json`, so the table survives restarts. The computer is never listed. |
@@ -93,7 +93,7 @@ nor the coach can see hidden bombs. Measured results are in
 python tests/run_all.py
 ```
 
-Seven headless suites, 83 checks - no window opens and no sound plays. Run one
+Eight headless suites (the bot one skips without torch) - no window opens and no sound plays. Run one
 with `python tests/run_all.py ai`.
 
 ---
@@ -146,11 +146,13 @@ off from your opponent.
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
 | `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
 | `requirements.txt` | The one dependency, pygame. |
-| `ai.py` | The probability engine behind the computer opponent and the coach. Sees only the visible board. |
+| `ai.py` | The probability engine behind the coach, and the computer opponent's fallback. Sees only the visible board. |
+| `botbrain.py` | Picks who plays the computer's moves: the trained model, or `ai.py` when a mode has none. |
 | `stats.py` | The hall of fame, saved to `stats.json`. |
 | `sound.py` | Sound effects, synthesised from maths - no audio files. |
 | `themes.py` | The three colour themes, and the contrast measure the tests use. |
-| `tests/` | Seven headless test suites. Run them with `python tests/run_all.py`. |
+| `bot/` | Reinforcement-learning opponents, one per mode. See [Training the bots](#training-the-bots). |
+| `tests/` | Eight headless test suites. Run them with `python tests/run_all.py`. |
 | `PLAY-Windows.bat` / `PLAY-Mac.command` | Double-click launchers for players - check Python, install pygame, ask for the address. |
 | `HOST-Windows.bat` / `HOST-Mac.command` | Double-click launchers that start the server. |
 | `ARCHITECTURE.md` | How the system works layer by layer, from Wi-Fi frames up to the game rules — written for presenting in class. |
@@ -166,6 +168,25 @@ everything else (`socket`, `threading`, `json`, `queue`) ships with Python:
 ```bash
 pip install -r requirements.txt
 ```
+
+---
+
+## Training the bots
+
+Optional, and nothing is trained yet. Run from the project root:
+
+```bash
+pip install -r bot/requirements.txt           # torch, numpy, scipy
+python -m bot.train --mode classic            # or radius2, sweeper, cube, all
+python -m bot.evaluate --mode classic         # trained vs random, mean turns
+```
+
+Weights are saved to `bot/weights/<mode>.pt`. `--steps N` shortens a run and
+`--mode custom --custom '{"size": 8, "bombs": 14}'` trains a custom board.
+Details are in [`bot/README.md`](bot/README.md). Only the server needs torch, and
+only to play the trained model: without it (or without weights for a mode, or on
+a custom board) the computer falls back to the `ai.py` solver. After training,
+`python -m bot.calibrate` sets what Easy and Medium mean.
 
 ---
 
