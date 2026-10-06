@@ -1,0 +1,4 @@
+# Only needed for the bots - the game itself still needs just pygame.
+torch
+numpy
+scipy

@@ -29,6 +29,7 @@ from collections import deque
 import pygame
 
 import ai
+import botbrain
 import config
 import game as game_rules
 import protocol
@@ -374,6 +375,7 @@ class Server:
                            if c.role == "spectator"],
             "bot_level": self.bot_level,
             "bot_seated": self._bot_seated(),
+            "bot_learned": botbrain.ready(g),    # trained model, not the solver
             "away": away,
             "paused": bool(away) and g.phase == game_rules.PHASE_PLAYING,
             "leaderboard": self.board.top(5),
@@ -648,6 +650,11 @@ class Server:
                  % (rec.name, rec.role, len([c for c in self._joined_clients()
                                              if c.alive])))
         self._note("%s joined" % rec.name)
+        # "Play the computer" chosen on the start screen: only the first
+        # person in can have it, a second arrival finds the seat taken.
+        if (msg.get("vs") in ai.LEVELS and rec.role == "player"
+                and len(self._joined_clients()) == 1):
+            self._on_set_bot(rec, {"level": msg["vs"]})
         self.push_clients()
         self._maybe_autostart()
         self.push_state()
@@ -863,10 +870,7 @@ class Server:
         if now < self.bot_ready_at:
             return
         self.bot_ready_at = None
-        info = g.public_info()
-        cell = ai.choose_cell(info["view"], info["dims"], info["weighted"],
-                              info["bombs_left"], info["bombs_are_bad"],
-                              self.bot_level, self.rng)
+        cell = botbrain.choose_cell(g, self.bot_level, self.rng)
         if cell is None:
             g.pass_turn()
             self.push_state()
@@ -1292,6 +1296,7 @@ def main():
         print("Could not bind port %d: %s" % (config.SERVER_PORT, exc))
         sys.exit(1)
     server.start_network()
+    threading.Thread(target=botbrain.preload, daemon=True).start()
     ServerUI(server).run()
 
 

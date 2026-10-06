@@ -1,0 +1,34 @@
+{
+  "classic": {
+    "best_turns": 10.4,
+    "easy": 0.5674,
+    "easy_turns": 17.36,
+    "hard": 0.0,
+    "medium": 0.17,
+    "medium_turns": 12.32
+  },
+  "cube": {
+    "best_turns": 16.91,
+    "easy": 0.3308,
+    "easy_turns": 28.59,
+    "hard": 0.0,
+    "medium": 0.1322,
+    "medium_turns": 19.94
+  },
+  "radius2": {
+    "best_turns": 9.72,
+    "easy": 0.4573,
+    "easy_turns": 16.07,
+    "hard": 0.0,
+    "medium": 0.1794,
+    "medium_turns": 11.93
+  },
+  "sweeper": {
+    "best_turns": 2.85,
+    "easy": 0.2436,
+    "easy_turns": 4.72,
+    "hard": 0.0,
+    "medium": 0.0644,
+    "medium_turns": 3.27
+  }
+}

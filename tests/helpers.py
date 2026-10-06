@@ -96,7 +96,7 @@ class ServerRunner:
 class Wire:
     """A bare socket client - speaks the protocol with no window."""
 
-    def __init__(self, port, nickname=None, token=None):
+    def __init__(self, port, nickname=None, token=None, vs=None):
         self.sock = socket.create_connection(("127.0.0.1", port), 5)
         self.latest = {}
         self.history = []
@@ -104,7 +104,7 @@ class Wire:
         self.closed = False
         threading.Thread(target=self._read, daemon=True).start()
         if nickname is not None:
-            self.join(nickname, token)
+            self.join(nickname, token, vs)
 
     def _read(self):
         for msg in protocol.MessageReader(self.sock).messages():
@@ -113,8 +113,10 @@ class Wire:
                 self.history.append(msg)
         self.closed = True
 
-    def join(self, nickname, token=None):
+    def join(self, nickname, token=None, vs=None):
         extra = {"token": token} if token else {}
+        if vs:
+            extra["vs"] = vs
         protocol.send(self.sock, protocol.JOIN, nickname=nickname, **extra)
 
     def send(self, msg_type, **payload):
