@@ -13,7 +13,7 @@ SERVER_HOST = "127.0.0.1"
 # Address the server binds to.  "0.0.0.0" accepts connections from any
 # network interface, which is what lets the second laptop reach us.
 BIND_HOST = "0.0.0.0"
-SERVER_PORT = 55555
+SERVER_PORT = 55550
 
 # --- Game rules --------------------------------------------------------
 GRID_SIZE = 6
@@ -75,3 +75,29 @@ STATS_FILE = "auto"
 # Where the game window remembers your theme and sound choice.  "auto" puts
 # client_prefs.json beside the game; None turns remembering off (tests do this).
 PREFS_FILE = "auto"
+
+# --- Elo Rating System -------------------------------------------------
+ELO_STARTING = 1200                  # Default starting rating
+ELO_K_FACTOR = 32                    # Sensitivity factor
+ELO_MINIMUM = 100                    # Floor rating
+ELO_RANKED_MODES = ("classic", "radius2", "sweeper", "cube")
+
+# Tiers: (name, min_rating, rgb_tuple)
+ELO_TIERS = [
+    ("Bronze",   0,    (195, 130, 80)),    # Warm Bronze
+    ("Silver",   1100, (185, 195, 205)),   # Bright Silver
+    ("Gold",     1300, (240, 185, 50)),    # Radiant Gold
+    ("Platinum", 1500, (65, 215, 195)),    # Cyan Platinum
+    ("Diamond",  1700, (170, 130, 250)),   # Violet Diamond
+    ("Master",   2000, (255, 80, 120)),    # Crimson Master
+]
+
+# Placement / Provisional Calibration
+ELO_PROVISIONAL_MATCHES = 5          # Number of placement matches
+ELO_PROVISIONAL_K = 64               # Accelerated K-factor for new players
+
+# Win Streak Bonus
+ELO_STREAK_THRESHOLD = 3             # Streak required for bonus
+ELO_STREAK_BONUS = 6                 # Flat bonus Elo added per win while on streak
+
+

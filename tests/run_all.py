@@ -17,6 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 SUITES = [
     ("rules", "test_rules.py", "every mode, scoring, stats, seat renaming"),
+    ("elo", "test_elo.py", "per-mode Elo formulas, persistence, isolation, migration"),
     ("ai", "test_ai.py", "probability engine: accuracy, strength, speed"),
     ("network", "test_network.py", "the server over real TCP, all modes"),
     ("server_features", "test_server_features.py",

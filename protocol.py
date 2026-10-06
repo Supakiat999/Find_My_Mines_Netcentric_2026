@@ -17,6 +17,7 @@ SET_CUSTOM = "set_custom"  # {settings} - board size, bombs, rules for Custom
 CHAT = "chat"              # {text} - a message to everyone
 HINT = "hint"              # {} - ask the AI coach about the best slot
 SET_BOT = "set_bot"        # {level} - play the computer: off/easy/medium/hard
+SET_RANKED = "set_ranked"  # {ranked} - toggle Ranked vs Casual match mode
 # JOIN also carries {token} when a dropped player is coming back, and {vs}
 # (easy/medium/hard) when the player chose the computer on the start screen.
 

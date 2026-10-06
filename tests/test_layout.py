@@ -367,7 +367,7 @@ def check_client(ui, rec, label):
         if board.bottom > footer.top - 90:
             problems.append("board too low - no room for the status text")
         buttons = [b for _m, b in ui.mode_rects]
-        buttons += [ui.sound_rect, ui.theme_rect]
+        buttons += [ui.sound_rect, ui.theme_rect] + ([ui.ranked_rect] if hasattr(ui, "ranked_rect") else [])
         buttons += [r for _l, _t, r in ui._opponent_buttons()]
         buttons += list(ui._coach_buttons())
         buttons += ui._chat_rects()[1]
