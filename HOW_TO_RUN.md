@@ -39,6 +39,10 @@ pip install -r requirements.txt
 That installs pygame, the only dependency. Python 3.8 or newer — check with
 `python --version`.
 
+Optional, on the **server computer only**: `pip install -r bot/requirements.txt`
+lets the computer opponent use the trained models. Without it the computer still
+plays, using the older solver.
+
 ---
 
 ## A. One computer (quick test)

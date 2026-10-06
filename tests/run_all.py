@@ -26,6 +26,7 @@ SUITES = [
     ("client_features", "test_client_features.py",
      "opponent picker, chat, coach, sound, themes, scaling, reconnect"),
     ("layout", "test_layout.py", "no overlapping or spilling text, 41 scenarios"),
+    ("bot", "test_bot.py", "RL bots: observation, symmetry, solo env (skips without torch)"),
 ]
 
 

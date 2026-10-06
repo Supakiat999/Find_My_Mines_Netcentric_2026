@@ -65,7 +65,8 @@ CUSTOM_CHOICES = [
     ("Bombs are", "goal", [("collect", "Points"), ("avoid", "Hazards")]),
 ]
 
-OPPONENTS = [("off", "Player"), ("easy", "Easy"), ("medium", "Medium"),
+# "off" is a second person (2 players); the rest are the computer (1 player).
+OPPONENTS = [("off", "2 Players"), ("easy", "Easy"), ("medium", "Medium"),
              ("hard", "Hard")]
 QUICK_CHAT = ["GG", "Nice!", "Oops", "Again?"]
 
@@ -243,6 +244,7 @@ class ClientUI:
 
         self.screen_name = SCREEN_NICKNAME
         self.nickname = ""
+        self.vs = "off"                      # chosen on the start screen
         self.my_id = None
         self.role = None
         self.token = None                    # proves who we are on reconnect
@@ -722,11 +724,17 @@ class ClientUI:
                 self.screen_name = SCREEN_NICKNAME
 
     def _on_nickname_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for level, _label, rect in self._start_buttons():
+                if rect.collidepoint(event.pos):
+                    self.vs = level
+            return
         if event.type != pygame.KEYDOWN:
             return
         if event.key == pygame.K_RETURN:
             if self.nickname.strip() and self.net.status == "connected":
-                self.net.send(protocol.JOIN, nickname=self.nickname.strip())
+                self.net.send(protocol.JOIN, nickname=self.nickname.strip(),
+                              vs=self.vs)
         elif event.key == pygame.K_BACKSPACE:
             self.nickname = self.nickname[:-1]
         elif event.key == pygame.K_ESCAPE:
@@ -875,10 +883,14 @@ class ClientUI:
 
     def _opponent_buttons(self):
         card = self.cards["opponent"]
-        bw = (card.w - 24 - 3 * 6) // 4
-        return [(level, label,
-                 pygame.Rect(card.x + 12 + i * (bw + 6), card.y + 42, bw, 30))
-                for i, (level, label) in enumerate(OPPONENTS)]
+        first = 96                                # "2 Players" needs the room
+        bw = (card.w - 24 - first - 3 * 6) // 3
+        x, rects = card.x + 12, []
+        for i, (level, label) in enumerate(OPPONENTS):
+            width = first if i == 0 else bw
+            rects.append((level, label, pygame.Rect(x, card.y + 42, width, 30)))
+            x += width + 6
+        return rects
 
     def _coach_buttons(self):
         card = self.cards["coach"]
@@ -945,9 +957,11 @@ class ClientUI:
         seated = (self.state or {}).get("bot_seated")
         if seated:
             name = next((p["name"] for p in self.players if p.get("bot")), "Computer")
-            line = "Playing against %s" % name
+            line = "1 player - %s" % name
+            if (self.state or {}).get("bot_learned"):
+                line += ", trained"
         elif len(self.players) >= 2:
-            line = "Playing against another person"
+            line = "2 players - against another person"
         else:
             line = "Waiting for a friend - or pick a level"
         self.text(self.fit(line, self.f_small, card.w - 28),
@@ -1113,6 +1127,15 @@ class ClientUI:
             self._view = (ox, oy, scale)
         pygame.display.flip()
 
+    @staticmethod
+    def _start_buttons():
+        """Who to play, on the start screen: a person, or the computer."""
+        mid, gap = GAME_W // 2, 6
+        width = (400 - 3 * gap) // 4
+        return [(level, label,
+                 pygame.Rect(mid - 200 + i * (width + gap), 440, width, 36))
+                for i, (level, label) in enumerate(OPPONENTS)]
+
     def _draw_nickname(self):
         mid = WIN_W // 2
         self.text("FIND MY MINES", (mid, 210), self.f_title, TEXT, center=True)
@@ -1130,9 +1153,16 @@ class ClientUI:
             self.text("Connecting to the server...", (mid, 386), self.f_body, WARN,
                       center=True)
 
+        self.text("Play against", (mid, 418), self.f_small, MUTED, center=True)
+        for level, label, rect in self._start_buttons():
+            self._button(rect, label, active=level == self.vs)
+        self.text("another person" if self.vs == "off"
+                  else "the computer, 1 player", (mid, 496), self.f_small,
+                  MUTED, center=True)
+
         # proof for the demo that the address comes from the source, not the user
         self.text("server %s  (set in config.py)" % self.net.address,
-                  (mid, 440), self.f_small, MUTED, center=True)
+                  (mid, 540), self.f_small, MUTED, center=True)
 
     def _draw_error(self):
         mid = WIN_W // 2

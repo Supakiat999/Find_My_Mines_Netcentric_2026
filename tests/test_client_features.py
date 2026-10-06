@@ -13,12 +13,14 @@ import config
 config.TURN_SECONDS = 120
 config.RECONNECT_GRACE = 6
 config.BOT_THINK_SECONDS = (0.02, 0.05)
+import botbrain
 import client as client_mod
 import game as g
 import protocol
 import sound as sound_mod
 import themes
 
+botbrain.preload()          # load the models now, not in the middle of a match
 uis = []
 
 
@@ -98,6 +100,34 @@ ui_wait(lambda: solo.match_end is None and game.phase == g.PHASE_PLAYING,
 ok(3, "a whole match against the computer, ended by mouse, rematched with one click")
 
 solo.net.close()
+run.stop()
+uis.clear()
+time.sleep(0.3)
+
+# =====================================================================
+# part 1b - choosing the computer on the start screen
+# =====================================================================
+run = ServerRunner(55614)
+srv, game = run.srv, run.game
+start = client_mod.ClientUI()
+uis.append(start)
+ui_wait(lambda: start.net.status == "connected", "connect")
+assert start.vs == "off"
+buttons = {level: rect for level, _l, rect in start._start_buttons()}
+start.draw()
+start._on_nickname_event(pygame.event.Event(
+    pygame.MOUSEBUTTONDOWN, button=1, pos=buttons["medium"].center))
+assert start.vs == "medium"
+type_text(start, "Solo")
+key(start, pygame.K_RETURN, "\r")
+ui_wait(lambda: start.screen_name == client_mod.SCREEN_GAME, "joined")
+ui_wait(lambda: srv.bot_level == "medium" and game.phase == g.PHASE_PLAYING,
+        "the computer seated by the join")
+ui_wait(lambda: start.state.get("bot_seated"), "the seated computer")
+start.draw()
+ok("3b", "the start screen's Medium joins straight into a game against the computer")
+
+start.net.close()
 run.stop()
 uis.clear()
 time.sleep(0.3)

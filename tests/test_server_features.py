@@ -12,10 +12,12 @@ config.TURN_SECONDS = 60
 config.RECONNECT_GRACE = 2
 config.BOT_THINK_SECONDS = (0.02, 0.06)      # quick, so whole matches finish
 import ai
+import botbrain
 import game as g
 import protocol
 import stats as stats_mod
 
+botbrain.preload()          # load the models now, not in the middle of a match
 PORT = 55602
 run = ServerRunner(PORT)
 srv, game = run.srv, run.game
@@ -305,7 +307,62 @@ ok(17, "no match starts around an absent player; after the grace the seat is rel
 leave(bob)
 
 # =====================================================================
-# 6. ranked mode toggle mid-game restarts cleanly
+# 18. the computer from the start screen, and which engine plays
+# =====================================================================
+class Spy:
+    """Stands in for the trained model: records the temperature it is given."""
+
+    def __init__(self):
+        self.temperatures = []
+
+    def choose_cell(self, info, temperature, rng):
+        self.temperatures.append(temperature)
+        return next(c for c in game.cells() if c not in game.revealed)
+
+
+real = botbrain._agents.get("classic")
+spy = Spy()
+levels = {"easy": 0.5, "medium": 0.2, "hard": 0.0}
+botbrain._agents["classic"] = (spy, levels)
+
+early = Wire(PORT, "Early", vs="medium")           # chosen on the start screen
+early_id = wait(lambda: early.get(protocol.WELCOME), "early")["client_id"]
+wait(lambda: game.players == [early_id, -1] and game.phase == g.PHASE_PLAYING,
+     "the computer seated by the join itself")
+assert srv.bot_level == "medium" and srv._bot_name() == "Computer (Medium)"
+ok(18, "choosing the computer on the start screen seats it as the player joins")
+
+wait(lambda: spy.temperatures or game.current_turn == early_id, "a turn")
+if game.current_turn == early_id:
+    pick(early, open_slot())
+wait(lambda: spy.temperatures, "the model to be asked", 8)
+assert set(spy.temperatures) == {0.2}
+ok(19, "the model plays the computer, at the temperature of the chosen level")
+
+late = Wire(PORT, "Late", vs="hard")               # the seat is already taken
+late_id = wait(lambda: late.get(protocol.WELCOME), "late")["client_id"]
+wait(lambda: game.players == [early_id, late_id], "the second person to get the seat")
+assert srv.bot_level == "medium" and not late.get(protocol.STATE)["bot_seated"]
+leave(early, late)
+srv.bot_level = "off"
+ok(20, "a second arrival asking for the computer just gets the human seat")
+
+botbrain._agents["classic"] = None                 # no model: the solver steps in
+fallback = Wire(PORT, "Fallback", vs="hard")
+fid = wait(lambda: fallback.get(protocol.WELCOME), "fallback")["client_id"]
+wait(lambda: game.players == [fid, -1] and game.phase == g.PHASE_PLAYING, "a match")
+assert not fallback.get(protocol.STATE)["bot_learned"]
+if game.current_turn == fid:
+    pick(fallback, open_slot())
+before = len(game.revealed)
+wait(lambda: len(game.revealed) > before, "the solver to play", 8)
+ok(21, "with no trained model the solver plays, and the state says so")
+leave(fallback)
+srv.bot_level = "off"
+botbrain._agents["classic"] = real
+
+# =====================================================================
+# 22. ranked mode toggle mid-game restarts cleanly
 # =====================================================================
 ids, alice, bob = table("Ann", "Ben")
 assert srv.ranked is True
@@ -317,7 +374,7 @@ alice.send(protocol.SET_RANKED, ranked=False)
 wait(lambda: not srv.ranked and game.phase == g.PHASE_PLAYING and len(game.revealed) == 0,
      "match restarted into casual mode")
 assert srv.ranked is False
-ok(18, "switching ranked/casual mid-game restarts the match on a fresh board")
+ok(22, "switching ranked/casual mid-game restarts the match on a fresh board")
 leave(alice, bob)
 
 run.stop()
