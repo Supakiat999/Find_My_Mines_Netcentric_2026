@@ -22,6 +22,7 @@ import config                                    # noqa: E402
 
 config.STATS_FILE = None
 config.PREFS_FILE = None
+config.DATABASE_URL = None
 
 import protocol                                  # noqa: E402
 

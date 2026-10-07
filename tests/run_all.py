@@ -18,6 +18,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = [
     ("rules", "test_rules.py", "every mode, scoring, stats, seat renaming"),
     ("elo", "test_elo.py", "per-mode Elo formulas, persistence, isolation, migration"),
+    ("database", "test_database.py", "PostgreSQL persistence (skips without TEST_DATABASE_URL)"),
+    ("database_server", "test_database_server.py", "server commit, retry and restart over PostgreSQL"),
     ("ai", "test_ai.py", "probability engine: accuracy, strength, speed"),
     ("network", "test_network.py", "the server over real TCP, all modes"),
     ("server_features", "test_server_features.py",
