@@ -5,6 +5,11 @@ here.  When you run the client on a second computer, the only line you need
 to change is SERVER_HOST.
 """
 
+import os
+
+# PostgreSQL is opt-in; unset DATABASE_URL preserves JSON persistence.
+DATABASE_URL = os.environ.get("DATABASE_URL") or None
+
 # --- Network -----------------------------------------------------------
 # Address the client dials.  Use "127.0.0.1" when the server runs on the
 # same computer, or the LAN IP of the server machine (e.g. "192.168.1.42").

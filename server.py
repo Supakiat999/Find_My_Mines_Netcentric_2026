@@ -24,7 +24,9 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from collections import deque
+from datetime import datetime, timezone
 
 import pygame
 
@@ -108,7 +110,12 @@ class Server:
         self.chat = deque(maxlen=CHAT_HISTORY)
         path = (stats_mod.default_path() if config.STATS_FILE == "auto"
                 else config.STATS_FILE)
-        self.board = stats_mod.Leaderboard(path)
+        self.board = (stats_mod.DatabaseLeaderboard(config.DATABASE_URL)
+                      if config.DATABASE_URL else stats_mod.Leaderboard(path))
+        self.pending_match = None
+        self._save_error = None
+        self.match_id = None
+        self.match_started_at = None
 
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -453,6 +460,11 @@ class Server:
         """
         before = list(self.game.players)
         joined = self._joined_clients()
+        if self.pending_match is not None:
+            for c in joined:
+                if c.id not in before:
+                    c.role = "spectator"
+            return
         seats = [c.id for c in joined[:config.MAX_PLAYERS]]
         for c in joined:
             c.role = "player" if c.id in seats else "spectator"
@@ -475,8 +487,12 @@ class Server:
         self.say(reason)
 
     def _begin_match(self, first_player=None):
+        if self.pending_match is not None:
+            return
         if not self.game.start_match(first_player):
             return
+        self.match_id = str(uuid.uuid4())
+        self.match_started_at = datetime.now(timezone.utc).isoformat()
         self.rematch_votes.clear()
         self.bot_ready_at = None
         self.paused_left = None
@@ -519,6 +535,8 @@ class Server:
             self._begin_match(first)
 
     def _end_match(self):
+        if self.pending_match is not None:
+            return
         self._stop_turn_clock()
         g = self.game
         names = self._names()
@@ -540,7 +558,69 @@ class Server:
                 outcome = "win" if p["id"] == g.last_winner else "loss"
             results.append({"name": p["name"], "result": outcome,
                             "points": p["score"]})
-        elo_changes = self.board.record_match(results, mode=g.mode, ranked=self.ranked)
+        context = {"players": players, "detail": detail, "results": results,
+                   "mode": g.mode, "ranked": self.ranked,
+                   "winner": g.last_winner, "names": names,
+                   "bot": self._bot_seated()}
+        if isinstance(self.board, stats_mod.DatabaseLeaderboard):
+            participants = []
+            for seat, p in enumerate(players, 1):
+                pid = p["id"]
+                stat = g.stats.get(pid, {})
+                participants.append({
+                    "seat": seat, "name": p["name"],
+                    "bot_level": self.bot_level if pid == BOT_ID else None,
+                    "result": ("draw" if g.last_winner is None else
+                               "win" if pid == g.last_winner else "loss"),
+                    "score": p["score"], "picks": stat.get("picks", 0),
+                    "hits": stat.get("kept", 0),
+                    "best_chain": stat.get("best_chain", 0),
+                })
+            self.pending_match = context
+            self.board.submit({
+                "id": self.match_id, "mode": g.mode, "ranked": self.ranked,
+                "started_at": self.match_started_at,
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "settings": {"dims": list(g.dims), "bombs": g.bomb_count,
+                             "turn_seconds": g.turn_seconds,
+                             "weighted": g.hints_weighted,
+                             "bombs_are_bad": g.bombs_are_bad},
+                "results": results, "participants": participants,
+            })
+            self._announce("Match finished - saving result.", system=True)
+            return
+        changes = self.board.record_match(results, mode=g.mode, ranked=self.ranked)
+        self._publish_match(context, changes)
+
+    def _poll_database(self):
+        if not isinstance(self.board, stats_mod.DatabaseLeaderboard):
+            return
+        while True:
+            try:
+                data, changes, error = self.board.completed.get_nowait()
+            except queue.Empty:
+                return
+            if error:
+                if error != self._save_error:
+                    self._save_error = error
+                    self.say("Result saving pending: %s" % error)
+                    self._announce("Result saving pending - database error. "
+                                   "New matches are paused.", system=True)
+                continue
+            self.board.data = data
+            context = self.pending_match
+            self.pending_match = None
+            self._save_error = None
+            if context is not None:
+                self._publish_match(context, changes)
+                self._reseat()
+                self._maybe_autostart()
+                self.push_state()
+
+    def _publish_match(self, context, elo_changes):
+        players, detail = context["players"], context["detail"]
+        results, names = context["results"], context["names"]
+        winner, mode, ranked = context["winner"], context["mode"], context["ranked"]
 
         elo_payload = {}
         for p in players:
@@ -549,18 +629,18 @@ class Server:
                 elo_payload[p["id"]] = elo_changes[name]
                 elo_payload[name] = elo_changes[name]
 
-        if self._bot_seated():
+        if context["bot"] and self._bot_seated():
             self.rematch_votes.add(BOT_ID)      # the computer always says yes
         self._broadcast(
             protocol.MATCH_END,
-            winner_id=g.last_winner,
-            draw=g.last_winner is None,
+            winner_id=winner,
+            draw=winner is None,
             players=players,
             stats=detail,
-            mode=g.mode,
-            ranked=self.ranked,
+            mode=mode,
+            ranked=ranked,
             elo_changes=elo_payload,
-            leaderboard=self.board.top(5, mode=g.mode),
+            leaderboard=self.board.top(5, mode=mode),
         )
         if elo_changes:
             parts = []
@@ -575,19 +655,19 @@ class Server:
                 parts.append("%s (%s%d -> %d)%s" % (name, sign, ch["delta"], ch["after"], extra_str))
             self._announce("Elo: " + " | ".join(parts), system=True)
             self.say("Elo: %s" % " | ".join(parts))
-        elif not self.ranked and len(results) == 2:
+        elif not ranked and len(results) == 2:
             self._announce("Casual match completed - no rating changes.", system=True)
-        if g.last_winner is None:
+        if winner is None:
             self.say("Match over - draw")
-        elif g.last_winner in names:
-            self.say("Match over - %s wins" % names[g.last_winner])
+        elif winner in names:
+            self.say("Match over - %s wins" % names[winner])
         else:
             self.say("Match over")
 
     def set_mode(self, mode):
         """Mode buttons on the console.  The server owns which game is played,
         so a change deals a fresh board for everyone at once."""
-        if mode == self.game.mode:
+        if self.pending_match is not None or mode == self.game.mode:
             return
         self.game.set_mode(mode)
         self.game.reset_scores()
@@ -606,6 +686,9 @@ class Server:
 
     def reset_all(self):
         """The Reset button: clear the board and both scores, then re-deal."""
+        if self.pending_match is not None:
+            self.say("Reset blocked - result saving pending")
+            return
         self.game.full_reset()
         self.rematch_votes.clear()
         self._stop_turn_clock()
@@ -623,6 +706,7 @@ class Server:
     # message handling (main thread only)
     # ------------------------------------------------------------------
     def handle_events(self):
+        self._poll_database()
         while True:
             try:
                 client_id, msg = self.events.get_nowait()
@@ -643,6 +727,9 @@ class Server:
 
         rec = self._client(client_id)
         if rec is None:
+            return
+        if self.pending_match is not None and kind not in (protocol.JOIN, protocol.CHAT):
+            self._send(rec, protocol.ERROR, message="result saving pending")
             return
         if kind == protocol.JOIN:
             self._on_join(rec, msg)
@@ -720,6 +807,14 @@ class Server:
         new.token = old.token
         new.away_since = None
         self.game.rename_player(old.id, new.id)
+        if self.pending_match is not None:
+            context = self.pending_match
+            for row in context["players"] + context["detail"]:
+                if row["id"] == old.id:
+                    row["id"] = new.id
+            if context["winner"] == old.id:
+                context["winner"] = new.id
+            context["names"][new.id] = context["names"].pop(old.id, old.name)
         if old.id in self.rematch_votes:
             self.rematch_votes.discard(old.id)
             self.rematch_votes.add(new.id)
@@ -1000,6 +1095,11 @@ class Server:
 
     def shutdown(self):
         self.running = False
+        if isinstance(self.board, stats_mod.DatabaseLeaderboard):
+            if self.pending_match is not None:
+                self.say("WARNING: closing with a pending result; check database "
+                         "before restarting. Uncommitted results are not durable.")
+            self.board.close()
         for rec in self._ordered_clients():
             try:
                 rec.sock.close()

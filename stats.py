@@ -8,6 +8,8 @@ real file).
 
 import json
 import os
+import queue
+import threading
 
 import config
 
@@ -94,6 +96,10 @@ class Leaderboard:
                 raw = json.load(handle)
         except (OSError, ValueError):
             return
+        self.load_records(raw)
+
+    def load_records(self, raw):
+        """Normalize current and legacy JSON records without reopening a file."""
         if not isinstance(raw, dict):
             return
         for name, row in raw.items():
@@ -314,3 +320,52 @@ class Leaderboard:
                 "mode": mode,
             })
         return out
+
+
+class DatabaseLeaderboard(Leaderboard):
+    """Cached reads on the game thread; transactional writes on one worker."""
+
+    def __init__(self, url):
+        from database import Store
+        self.path = None
+        self.store = Store(url)
+        self.data = self.store.load()
+        self.jobs = queue.Queue()
+        self.completed = queue.Queue()
+        self.stopping = threading.Event()
+        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.worker.start()
+
+    def submit(self, snapshot):
+        # TODO: Add a durable result journal if recovery before commit is required.
+        self.jobs.put(snapshot)
+
+    def _run(self):
+        import psycopg
+        retryable = (psycopg.OperationalError, psycopg.InterfaceError,
+                     psycopg.errors.SerializationFailure,
+                     psycopg.errors.DeadlockDetected,
+                     psycopg.errors.LockNotAvailable,
+                     psycopg.errors.QueryCanceled)
+        while not self.stopping.is_set():
+            snapshot = self.jobs.get()
+            if snapshot is None:
+                return
+            while not self.stopping.is_set():
+                try:
+                    data, changes = self.store.record_match(snapshot)
+                except Exception as exc:
+                    self.completed.put((None, None, type(exc).__name__))
+                    if not isinstance(exc, retryable):
+                        self.stopping.wait()
+                        return
+                    if self.stopping.wait(3):
+                        return
+                else:
+                    self.completed.put((data, changes, None))
+                    break
+
+    def close(self):
+        self.stopping.set()
+        self.jobs.put(None)
+        self.worker.join(timeout=10)
