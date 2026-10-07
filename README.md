@@ -161,7 +161,7 @@ off from your opponent.
 | `game.py` | Pure game rules — bomb placement, neighbour counts, turn order, scoring. No sockets, no GUI. |
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
 | `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
-| `requirements.txt` | Pygame and Psycopg 3 for optional PostgreSQL persistence. |
+| `requirements.txt` | Pygame, Psycopg 3, and python-dotenv for `.env` configuration. |
 | `database.py`, `db/`, `compose.yaml` | Transactional PostgreSQL storage and Docker setup. |
 | `ai.py` | The probability engine behind the coach, and the computer opponent's fallback. Sees only the visible board. |
 | `botbrain.py` | Picks who plays the computer's moves: the trained model, or `ai.py` when a mode has none. |
@@ -180,7 +180,8 @@ off from your opponent.
 ## Requirements
 
 Python 3.8+ (developed on 3.13). Pygame runs the game; Psycopg 3 enables optional
-PostgreSQL persistence. Networking (`socket`, `threading`, `json`, `queue`) ships with Python:
+PostgreSQL persistence; python-dotenv loads `.env` configuration automatically.
+Networking (`socket`, `threading`, `json`, `queue`) ships with Python:
 
 ```bash
 pip install -r requirements.txt

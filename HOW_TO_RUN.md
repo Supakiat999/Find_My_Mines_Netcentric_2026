@@ -255,16 +255,13 @@ cp .env.example .env
 # Replace both password placeholders with different random hex passwords.
 docker compose up -d --wait
 pip install -r requirements.txt
-set -a
-. ./.env
-set +a
 python server.py
 ```
 
-The `DATABASE_URL` entry expands `RUNTIME_PASSWORD` when the file is sourced.
-Python does not load `.env` automatically. On PowerShell, set
-`$env:DATABASE_URL = 'postgresql://runtime:YOUR_RUNTIME_PASSWORD@127.0.0.1:5432/find_my_mines'`
-before starting the server. Keep passwords and `.env` out of Git.
+Python loads the project-root `.env` automatically using `python-dotenv`, including
+`${RUNTIME_PASSWORD}` expansion. Existing environment variables take precedence.
+This works from any working directory and also applies to seed and migration scripts.
+Keep passwords and `.env` out of Git.
 
 PostgreSQL 17 binds only to `127.0.0.1:5432`. The `runtime` role can read and
 record results but cannot create, alter, or delete tables. The `mines_admin` role
@@ -285,6 +282,7 @@ Stop the game server before migration. Back up `stats.json`, then use the owner 
 
 ```bash
 cp stats.json stats.backup.json
+set -a; . ./.env; set +a
 DATABASE_URL="postgresql://mines_admin:${POSTGRES_PASSWORD}@127.0.0.1:5432/find_my_mines" \
   python tools/migrate_stats.py import stats.json
 ```
@@ -301,12 +299,13 @@ python tools/migrate_stats.py export stats.export.json
 ```
 
 Export refuses to overwrite a file without `--force`. Back up the current JSON,
-replace it with the export, unset `DATABASE_URL`, and restart the server. There is
+replace it with the export, set `DATABASE_URL=` in `.env` or the environment, and
+restart the server. There is
 no automatic JSON fallback or dual writing when PostgreSQL is configured.
 
 ### Mock data
 
-Stop the game server, export `DATABASE_URL` as above, then run:
+Stop the game server, configure `DATABASE_URL` in `.env`, then run:
 
 ```bash
 python seed/seed.py
@@ -363,6 +362,7 @@ The database suites create and remove uniquely named temporary schemas. They do 
 modify live game tables. Use a test database owner URL, never the restricted runtime URL:
 
 ```bash
+set -a; . ./.env; set +a
 TEST_DATABASE_URL="postgresql://mines_admin:${POSTGRES_PASSWORD}@127.0.0.1:5432/find_my_mines" \
   python tests/run_all.py database
 ```

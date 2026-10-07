@@ -7,7 +7,11 @@ to change is SERVER_HOST.
 
 import os
 
-# PostgreSQL is opt-in; unset DATABASE_URL preserves JSON persistence.
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+# PostgreSQL is opt-in; an empty DATABASE_URL preserves JSON persistence.
 DATABASE_URL = os.environ.get("DATABASE_URL") or None
 
 # --- Network -----------------------------------------------------------

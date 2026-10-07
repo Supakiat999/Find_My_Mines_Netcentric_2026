@@ -12,11 +12,11 @@ if errorlevel 1 set PY=py -3
 %PY% --version >nul 2>nul
 if errorlevel 1 goto nopython
 
-%PY% -c "import pygame" >nul 2>nul
+%PY% -c "import pygame, dotenv, psycopg" >nul 2>nul
 if errorlevel 1 (
-    echo    Installing pygame. This happens once and takes a minute...
+    echo    Installing dependencies. This happens once and takes a minute...
     echo.
-    %PY% -m pip install --quiet --disable-pip-version-check pygame
+    %PY% -m pip install --quiet --disable-pip-version-check -r requirements.txt
     if errorlevel 1 goto nopygame
 )
 
@@ -40,8 +40,8 @@ echo    During the install, tick "Add Python to PATH".
 goto end
 
 :nopygame
-echo    Could not install pygame automatically.
-echo    Try running this by hand:  python -m pip install pygame
+echo    Could not install dependencies automatically.
+echo    Try running this by hand:  python -m pip install -r requirements.txt
 goto end
 
 :end

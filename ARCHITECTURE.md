@@ -358,7 +358,9 @@ only — the raw BSD socket API. No web framework, no Socket.IO.
 ## PostgreSQL persistence
 
 `database.py` uses Psycopg 3 and parameterized SQL. PostgreSQL is optional:
-`config.DATABASE_URL` selects it; an unset URL preserves existing JSON behaviour.
+`config.DATABASE_URL` selects it; an empty or unconfigured URL preserves JSON behaviour.
+Configuration loads the project-root `.env` through python-dotenv without overriding
+existing environment variables.
 Docker Compose provides PostgreSQL 17, a persistent volume, and separate owner and
 restricted runtime roles. See `HOW_TO_RUN.md` for setup, migration, and backups.
 

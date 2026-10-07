@@ -16,12 +16,12 @@ if ! command -v "$PY" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! "$PY" -c "import pygame" >/dev/null 2>&1; then
-    echo "   Installing pygame. This happens once and takes a minute..."
+if ! "$PY" -c "import pygame, dotenv, psycopg" >/dev/null 2>&1; then
+    echo "   Installing dependencies. This happens once and takes a minute..."
     echo
-    if ! "$PY" -m pip install --quiet pygame; then
-        echo "   Could not install pygame automatically."
-        echo "   Try running this by hand:  python3 -m pip install pygame"
+    if ! "$PY" -m pip install --quiet -r requirements.txt; then
+        echo "   Could not install dependencies automatically."
+        echo "   Try running this by hand:  python3 -m pip install -r requirements.txt"
         echo
         read -n 1 -s -r -p "   Press any key to close..."
         exit 1

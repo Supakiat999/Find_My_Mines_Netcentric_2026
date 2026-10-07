@@ -16,6 +16,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 SUITES = [
+    ("config", "test_config.py", ".env loading, interpolation and environment overrides"),
     ("rules", "test_rules.py", "every mode, scoring, stats, seat renaming"),
     ("elo", "test_elo.py", "per-mode Elo formulas, persistence, isolation, migration"),
     ("database", "test_database.py", "PostgreSQL persistence (skips without TEST_DATABASE_URL)"),
