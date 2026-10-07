@@ -355,3 +355,29 @@ match. A waiting spectator is promoted into the empty seat.
 
 **"Is this really socket programming, or a framework?"** Python's `socket` module
 only — the raw BSD socket API. No web framework, no Socket.IO.
+## PostgreSQL persistence
+
+`database.py` uses Psycopg 3 and parameterized SQL. PostgreSQL is optional:
+`config.DATABASE_URL` selects it; an unset URL preserves existing JSON behaviour.
+Docker Compose provides PostgreSQL 17, a persistent volume, and separate owner and
+restricted runtime roles. See `HOW_TO_RUN.md` for setup, migration, and backups.
+
+The schema in `db/001_initial.sql` separates player totals, per-mode ratings,
+completed matches, and participant results. Foreign keys use stable database IDs,
+not connection IDs. Tiers, placement status, Elo deltas, and hit rates are derived.
+Bot seats have no player record; their matches never update Elo.
+
+`stats.DatabaseLeaderboard` retains existing cached leaderboard reads. One worker
+records an immutable match snapshot; only the game thread applies committed cache
+updates and broadcasts results. The turn loop never waits for a database query.
+Startup loads the cache before accepting players. Results and new matches wait for
+commit; transient failures retry, and permanent errors remain visible to operators.
+
+Each transaction locks its match UUID for idempotency, then player rows in stable
+nickname order. Existing `stats.Leaderboard` calculations run against locked current
+records. Totals, ratings, the match, and both participants commit together. A retry
+returns the original saved rating changes without incrementing totals twice.
+
+JSON import preserves existing aggregates but cannot create unknown historical
+matches. Export supports rollback. Pending snapshots and the cache assume one server;
+durable pre-commit recovery and multi-server cache refresh are intentionally deferred.

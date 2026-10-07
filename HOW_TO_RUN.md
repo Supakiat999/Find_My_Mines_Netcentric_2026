@@ -242,3 +242,130 @@ accuracy check. To run just one part: `python tests/run_all.py ai`.
 - **RESET GAME** — clears the board *and* both scores, then deals a new match
 
 Close the server window (or press Esc) to shut everything down.
+
+## PostgreSQL persistence (optional)
+
+The server uses PostgreSQL when `DATABASE_URL` is set. Otherwise it keeps using
+`stats.json`. Clients never connect to the database and need no database credentials.
+
+Install Docker with Compose, then run from the project root:
+
+```bash
+cp .env.example .env
+# Replace both password placeholders with different random hex passwords.
+docker compose up -d --wait
+pip install -r requirements.txt
+set -a
+. ./.env
+set +a
+python server.py
+```
+
+The `DATABASE_URL` entry expands `RUNTIME_PASSWORD` when the file is sourced.
+Python does not load `.env` automatically. On PowerShell, set
+`$env:DATABASE_URL = 'postgresql://runtime:YOUR_RUNTIME_PASSWORD@127.0.0.1:5432/find_my_mines'`
+before starting the server. Keep passwords and `.env` out of Git.
+
+PostgreSQL 17 binds only to `127.0.0.1:5432`. The `runtime` role can read and
+record results but cannot create, alter, or delete tables. The `mines_admin` role
+is for setup, migration, and backups. The database is named `find_my_mines`.
+
+Adminer runs at http://127.0.0.1:8181. Select **PostgreSQL**, server `postgres`,
+database `find_my_mines`, and username `mines_admin` with `POSTGRES_PASSWORD`
+from `.env`. Use `runtime` with `RUNTIME_PASSWORD` for restricted access instead.
+Adminer binds only to localhost; credentials are entered at login, not stored in its configuration.
+
+Completed matches, both participants (including bots), player totals, and per-mode
+ratings are stored. Boards, chat, and reconnect tokens remain in memory. Nicknames
+remain case-sensitive identities, not authenticated accounts.
+
+### Import existing stats and roll back
+
+Stop the game server before migration. Back up `stats.json`, then use the owner URL:
+
+```bash
+cp stats.json stats.backup.json
+DATABASE_URL="postgresql://mines_admin:${POSTGRES_PASSWORD}@127.0.0.1:5432/find_my_mines" \
+  python tools/migrate_stats.py import stats.json
+```
+
+Import preserves normalized totals, streaks, Elo, peaks, and placement counts.
+Repeating the same import is safe before any matches have been recorded. Different
+existing records or any completed database match cause import to fail. Historical
+match rows cannot be reconstructed from aggregate JSON and are not invented.
+
+For rollback after playing database-backed matches, stop the server and export:
+
+```bash
+python tools/migrate_stats.py export stats.export.json
+```
+
+Export refuses to overwrite a file without `--force`. Back up the current JSON,
+replace it with the export, unset `DATABASE_URL`, and restart the server. There is
+no automatic JSON fallback or dual writing when PostgreSQL is configured.
+
+### Mock data
+
+Stop the game server, export `DATABASE_URL` as above, then run:
+
+```bash
+python seed/seed.py
+```
+
+This adds four `Mock_` players and eleven completed matches across all five modes,
+including ranked, casual, and computer-opponent examples. It uses the real game
+rules and database recording logic, so totals, Elo, and participant statistics agree.
+Fixed match UUIDs make reruns safe, including after a partial failure. Existing
+non-mock player records are unchanged; no records are deleted. Use this only in a
+development database. Restart the server afterward to refresh its leaderboard cache.
+
+### Lifecycle and failures
+
+```bash
+docker compose ps
+docker compose logs postgres
+docker compose restart postgres
+docker compose stop
+docker compose up -d --wait
+```
+
+The named volume preserves records through container restarts and recreation.
+**`docker compose down -v` deletes database storage. Do not use it to apply schema changes.**
+Initialization files in `db/` run only for an empty volume. Apply future schema
+changes explicitly after backing up; changing initialization SQL does not migrate
+an existing database. Changing `.env` passwords also does not rotate existing roles.
+
+Backup and restore use the owner role, not runtime:
+
+```bash
+docker compose exec -T postgres pg_dump -U mines_admin -d find_my_mines > mines.backup.sql
+# Restore only into a newly created database with no game tables; stop the server first.
+docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U mines_admin -d find_my_mines < mines.backup.sql
+```
+
+The restore example assumes `find_my_mines` has no tables. An initialized Docker
+database already has tables; restore into a separate empty database instead of
+running this against live records.
+
+If startup cannot reach PostgreSQL, the server fails rather than showing empty stats.
+During play, database writes run on one worker. Reads use the server's cache.
+A completed match waits for commit before final Elo is announced. Transient failures
+retry with the same match UUID; chat and networking stay responsive, but new matches,
+settings changes, and resets wait. Permanent errors require operator intervention.
+
+Pending results live only in memory. A crash before commit can lose the result;
+keep the server running until saving completes. Shutdown warns when a result is pending.
+The cache targets one game server; sharing players across servers requires cache refresh.
+
+### Database checks
+
+The database suites create and remove uniquely named temporary schemas. They do not
+modify live game tables. Use a test database owner URL, never the restricted runtime URL:
+
+```bash
+TEST_DATABASE_URL="postgresql://mines_admin:${POSTGRES_PASSWORD}@127.0.0.1:5432/find_my_mines" \
+  python tests/run_all.py database
+```
+
+Without `TEST_DATABASE_URL`, these suites skip. Other suites keep using in-memory
+stats even when `DATABASE_URL` is exported.
