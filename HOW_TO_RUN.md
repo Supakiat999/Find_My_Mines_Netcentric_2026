@@ -193,7 +193,14 @@ hotspot is the reliable fallback for the demo, so set one up in advance.
 
 ## Playing
 
-- Whoever joins first is player 1; the second is player 2. The match starts
+1. Enter a nickname to reach the **Room List**.
+2. Choose **Create Room**, then enter its name, mode, custom settings, opponent,
+   and Ranked/Casual choice. Create joins the new room automatically.
+3. Other players choose **Join** for a vacant seat or **Watch** to spectate.
+4. Use **Leave Room** to return to the lobby. Settings cannot change in an existing
+   room; create another room for different rules.
+
+- The creator takes the first seat; a second human takes the other. The match starts
   automatically and the **server picks who goes first at random**.
 - You get **10 seconds** per turn. The countdown is at the top.
 - Click a covered slot. A **bomb** scores 1 point and you keep your turn; an
@@ -203,14 +210,16 @@ hotspot is the reliable fallback for the demo, so set one up in advance.
   **YOU LOST** with the scores, and a **REMATCH** button.
 - A rematch starts when **both** players click it; the previous winner goes
   first.
-- A third person can connect and watch — they appear in the ONLINE list at the
-  bottom and follow the board, but cannot click.
+- Spectators appear in the room's ONLINE list and follow its board without clicking.
+  Watching does not automatically enroll someone as a player when a seat opens.
+- Multiple rooms run simultaneously. Chat, clocks, hints, boards, rematches, and
+  reconnect pauses stay inside their room. Leaving an active match interrupts it
+  without recording a forfeit or changing Elo.
 
 ## The extras (KK Plus)
 
-- **Play alone:** in the OPPONENT card on the right, pick Easy, Medium or Hard.
-  Pick Player to wait for a friend instead. It only works while one person is
-  connected.
+- **Play alone:** choose Easy, Medium, or Hard while creating a room. Its second
+  seat stays reserved for the computer. Other visitors can watch.
 - **AI coach:** on your turn press **Ask the coach** (or **H**). The best slot is
   outlined and every covered slot shows its odds. You get three questions per
   match; **Odds** turns the tint on and off.
@@ -240,6 +249,9 @@ accuracy check. To run just one part: `python tests/run_all.py ai`.
 - **MATCH** — phase, whose turn, countdown, bombs left, scores
 - **BOARD (server view)** — the only screen showing bombs nobody has found yet
 - **RESET GAME** — clears the board *and* both scores, then deals a new match
+
+Use **Previous** and **Next** to select a room. Reset affects only that selected
+room. Room settings are chosen by players during creation, not on the admin console.
 
 Close the server window (or press Esc) to shut everything down.
 
@@ -349,8 +361,9 @@ running this against live records.
 If startup cannot reach PostgreSQL, the server fails rather than showing empty stats.
 During play, database writes run on one worker. Reads use the server's cache.
 A completed match waits for commit before final Elo is announced. Transient failures
-retry with the same match UUID; chat and networking stay responsive, but new matches,
-settings changes, and resets wait. Permanent errors require operator intervention.
+retry with the same match UUID. Only the originating room waits for rematches and
+resets; other rooms keep playing. Chat and networking stay responsive. Permanent
+errors require operator intervention and do not stop unrelated result jobs.
 
 Pending results live only in memory. A crash before commit can lose the result;
 keep the server running until saving completes. Shutdown warns when a result is pending.

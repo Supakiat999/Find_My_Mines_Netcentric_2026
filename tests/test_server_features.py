@@ -20,7 +20,7 @@ import stats as stats_mod
 botbrain.preload()          # load the models now, not in the middle of a match
 PORT = 55602
 run = ServerRunner(PORT)
-srv, game = run.srv, run.game
+srv, game = run.srv, None
 
 
 def open_slot():
@@ -31,9 +31,30 @@ def pick(wire, cell):
     wire.send(protocol.PICK, row=cell[0], col=cell[1])
 
 
+def recreate(wires, mode="classic", custom=None, bot="off", ranked=True):
+    global game
+    for wire in wires:
+        wire.send(protocol.LEAVE_ROOM)
+    wait(lambda: all((w.get(protocol.WELCOME) or {}).get("role") == "lobby"
+                     for w in wires), "clients back in lobby")
+    wires[0].forget(protocol.WELCOME)
+    wires[0].send(protocol.CREATE_ROOM, name="Test room", mode=mode,
+                   custom=custom or {}, bot_level=bot, ranked=ranked)
+    room_id = wait(lambda: (wires[0].get(protocol.WELCOME) or {}).get("room_id"),
+                   "configured room")
+    for wire in wires[1:]:
+        wire.forget(protocol.WELCOME)
+        wire.send(protocol.JOIN_ROOM, room_id=room_id, watch=False)
+    wait(lambda: all((w.get(protocol.WELCOME) or {}).get("room_id") == room_id
+                     for w in wires), "clients rejoined configured room")
+    game = srv.rooms[room_id].game
+
+
 def table(a="Alice", b="Bob"):
     """A fresh two-person table, returned as ({id: wire}, alice, bob)."""
+    global game
     x, y = Wire(PORT, a), Wire(PORT, b)
+    game = srv.selected_room.game
     wait(lambda: game.phase == g.PHASE_PLAYING and len(game.players) == 2,
          "a match at the new table")
     ids = {x.get(protocol.WELCOME)["client_id"]: x,
@@ -136,7 +157,10 @@ wait(lambda: game.phase == g.PHASE_PLAYING, "new match")
 assert game.hints_left[game.current_turn] == config.HINTS_PER_MATCH
 ok(5, "coach: three questions per match, refused after that, refilled next match")
 
-run.call(srv.set_mode, g.MODE_SWEEPER)
+alice.forget(protocol.ERROR)
+alice.send(protocol.SET_MODE, mode=g.MODE_SWEEPER)
+assert "fixed" in wait(lambda: alice.get(protocol.ERROR), "fixed mode")["message"]
+recreate((alice, bob), mode=g.MODE_SWEEPER)
 wait(lambda: game.phase == g.PHASE_PLAYING and game.mode == g.MODE_SWEEPER, "sweeper")
 who = ids[game.current_turn]
 who.forget(protocol.HINT_RESULT)
@@ -146,14 +170,14 @@ assert hint["goal"] == "avoid"
 assert abs(hint["p"] - min(h["p"] for h in hint["heat"])) < 1e-9
 ok(6, "coach: in Minesweeper mode it recommends the SAFEST slot")
 leave(alice, bob)
-run.call(srv.set_mode, g.MODE_CLASSIC)
 
 # =====================================================================
 # 3. the computer opponent
 # =====================================================================
 solo = Wire(PORT, "Solo")
 solo_id = wait(lambda: solo.get(protocol.WELCOME), "solo")["client_id"]
-solo.send(protocol.SET_BOT, level="hard")
+recreate((solo,), bot="hard")
+solo_id = solo.get(protocol.WELCOME)["client_id"]
 wait(lambda: game.players == [solo_id, -1] and game.phase == g.PHASE_PLAYING,
      "the computer to sit down and a match to start")
 st = wait(lambda: solo.get(protocol.STATE), "state")
@@ -193,25 +217,26 @@ if end["winner_id"] is not None:
     assert game.current_turn == end["winner_id"]
 ok(9, "rematch against the computer needs only the human's click; winner starts")
 
-solo.send(protocol.SET_BOT, level="easy")
-wait(lambda: srv.bot_level == "easy" and game.bombs_found == 0
-     and game.phase == g.PHASE_PLAYING, "restart at the new level")
-assert srv._bot_name() == "Computer (Easy)"
+recreate((solo,), bot="easy")
+wait(lambda: srv.selected_room.bot_level == "easy" and game.bombs_found == 0
+     and game.phase == g.PHASE_PLAYING, "new easy room")
+assert srv.selected_room._bot_name() == "Computer (Easy)"
 duo = Wire(PORT, "Duo")
-duo_id = wait(lambda: duo.get(protocol.WELCOME), "second human")["client_id"]
-wait(lambda: game.players == [solo_id, duo_id] and game.phase == g.PHASE_PLAYING,
-     "the computer to stand up for a human")
-assert not solo.get(protocol.STATE)["bot_seated"]
+duo_welcome = wait(lambda: duo.get(protocol.WELCOME), "second human")
+assert duo_welcome["role"] == "spectator" and solo.get(protocol.STATE)["bot_seated"]
 solo.forget(protocol.ERROR)
 solo.send(protocol.SET_BOT, level="hard")
-assert "already seated" in wait(lambda: solo.get(protocol.ERROR), "refusal")["message"]
-ok(10, "a second human takes the computer's seat; the computer cannot be added then")
+assert "fixed" in wait(lambda: solo.get(protocol.ERROR), "fixed bot setting")["message"]
+ok(10, "bot room keeps its configured computer; second human watches; in-room changes refused")
 
 duo.close()
-wait(lambda: srv.game.players == [solo_id, -1], "the computer to return", 8)
+wait(lambda: game.players == [solo_id, -1], "the computer remains seated", 8)
+solo.forget(protocol.ERROR)
 solo.send(protocol.SET_BOT, level="off")
+assert "fixed" in wait(lambda: solo.get(protocol.ERROR), "fixed bot setting")["message"]
+recreate((solo,), bot="off")
 wait(lambda: -1 not in game.players and game.phase == g.PHASE_WAITING, "computer off")
-ok(11, "when the opponent leaves the computer comes back; switching it off frees the seat")
+ok(11, "bot setting changes require a new room without the computer")
 leave(solo)
 
 # =====================================================================
@@ -256,7 +281,7 @@ turn_before = game.current_turn
 revealed_before = len(game.revealed)
 
 alice.close()                                       # her Wi-Fi drops
-wait(lambda: srv.turn_deadline is None, "the clock to freeze")
+wait(lambda: srv.selected_room.turn_deadline is None, "the clock to freeze")
 st = wait(lambda: bob.get(protocol.STATE) if (bob.get(protocol.STATE) or {}).get("paused")
           else None, "the paused state")
 assert st["away"][0]["name"] == "Ann" and st["phase"] == "playing"
@@ -271,7 +296,7 @@ wait(lambda: new_id in game.players and ann_id not in game.players, "seat handed
 assert game.scores[new_id] == score_before[ann_id]
 assert len(game.revealed) == revealed_before
 assert game.current_turn == (new_id if turn_before == ann_id else turn_before)
-wait(lambda: srv.turn_deadline is not None, "the clock to resume")
+wait(lambda: srv.selected_room.turn_deadline is not None, "the clock to resume")
 assert not (wait(lambda: alice2.get(protocol.STATE), "state")["paused"])
 ids = {new_id: alice2, [i for i in ids if i != ann_id][0]: bob}
 turn = ids[game.current_turn]
@@ -297,14 +322,15 @@ ok(16, "a wrong token gets no one's seat")
 # nobody starts a fresh match while someone is away; the seat expires
 new_id2 = alice3.get(protocol.WELCOME)["client_id"]
 alice3.close()
-wait(lambda: srv._anyone_away(), "away")
+wait(lambda: srv.selected_room._anyone_away(), "away")
 run.call(srv.reset_all)
 time.sleep(0.5)
 assert game.phase == g.PHASE_WAITING, "no match may start without the missing player"
-wait(lambda: not srv._anyone_away(), "the grace period to expire", 6)
+wait(lambda: not srv.selected_room._anyone_away(), "the grace period to expire", 6)
 assert new_id2 not in game.players
 ok(17, "no match starts around an absent player; after the grace the seat is released")
 leave(bob)
+wait(lambda: not srv.rooms, "old reconnect room cleanup", 6)
 
 # =====================================================================
 # 18. the computer from the start screen, and which engine plays
@@ -326,10 +352,11 @@ levels = {"easy": 0.5, "medium": 0.2, "hard": 0.0}
 botbrain._agents["classic"] = (spy, levels)
 
 early = Wire(PORT, "Early", vs="medium")           # chosen on the start screen
+game = srv.selected_room.game
 early_id = wait(lambda: early.get(protocol.WELCOME), "early")["client_id"]
-wait(lambda: game.players == [early_id, -1] and game.phase == g.PHASE_PLAYING,
+wait(lambda: set(game.players) == {early_id, -1} and game.phase == g.PHASE_PLAYING,
      "the computer seated by the join itself")
-assert srv.bot_level == "medium" and srv._bot_name() == "Computer (Medium)"
+assert srv.selected_room.bot_level == "medium" and srv.selected_room._bot_name() == "Computer (Medium)"
 ok(18, "choosing the computer on the start screen seats it as the player joins")
 
 wait(lambda: spy.temperatures or game.current_turn == early_id, "a turn")
@@ -340,17 +367,19 @@ assert set(spy.temperatures) == {0.2}
 ok(19, "the model plays the computer, at the temperature of the chosen level")
 
 late = Wire(PORT, "Late", vs="hard")               # the seat is already taken
+game = srv.selected_room.game
 late_id = wait(lambda: late.get(protocol.WELCOME), "late")["client_id"]
-wait(lambda: game.players == [early_id, late_id], "the second person to get the seat")
-assert srv.bot_level == "medium" and not late.get(protocol.STATE)["bot_seated"]
+wait(lambda: late.get(protocol.WELCOME)["role"] == "spectator",
+     "the second person to watch bot room")
+assert srv.selected_room.bot_level == "medium" and late.get(protocol.STATE)["bot_seated"]
 leave(early, late)
-srv.bot_level = "off"
-ok(20, "a second arrival asking for the computer just gets the human seat")
+ok(20, "a bot room's second arrival watches without displacing configured bot")
 
 botbrain._agents["classic"] = None                 # no model: the solver steps in
 fallback = Wire(PORT, "Fallback", vs="hard")
+game = srv.selected_room.game
 fid = wait(lambda: fallback.get(protocol.WELCOME), "fallback")["client_id"]
-wait(lambda: game.players == [fid, -1] and game.phase == g.PHASE_PLAYING, "a match")
+wait(lambda: set(game.players) == {fid, -1} and game.phase == g.PHASE_PLAYING, "a match")
 assert not fallback.get(protocol.STATE)["bot_learned"]
 if game.current_turn == fid:
     pick(fallback, open_slot())
@@ -358,23 +387,24 @@ before = len(game.revealed)
 wait(lambda: len(game.revealed) > before, "the solver to play", 8)
 ok(21, "with no trained model the solver plays, and the state says so")
 leave(fallback)
-srv.bot_level = "off"
 botbrain._agents["classic"] = real
 
 # =====================================================================
 # 22. ranked mode toggle mid-game restarts cleanly
 # =====================================================================
 ids, alice, bob = table("Ann", "Ben")
-assert srv.ranked is True
+assert srv.selected_room.ranked is True
 pick(ids[game.current_turn], open_slot())
 wait(lambda: len(game.revealed) > 0, "first slot to open")
 
 # Toggle to casual mid-game
 alice.send(protocol.SET_RANKED, ranked=False)
-wait(lambda: not srv.ranked and game.phase == g.PHASE_PLAYING and len(game.revealed) == 0,
-     "match restarted into casual mode")
-assert srv.ranked is False
-ok(22, "switching ranked/casual mid-game restarts the match on a fresh board")
+assert "fixed" in wait(lambda: alice.get(protocol.ERROR), "ranked setting immutable")["message"]
+recreate((alice, bob), ranked=False)
+wait(lambda: not srv.selected_room.ranked and game.phase == g.PHASE_PLAYING,
+     "casual room starts")
+assert srv.selected_room.ranked is False
+ok(22, "ranked changes are refused in-room; a new casual room starts cleanly")
 leave(alice, bob)
 
 run.stop()

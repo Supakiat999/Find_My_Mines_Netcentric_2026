@@ -19,6 +19,9 @@ SUITES = [
     ("config", "test_config.py", ".env loading, interpolation and environment overrides"),
     ("rules", "test_rules.py", "every mode, scoring, stats, seat renaming"),
     ("elo", "test_elo.py", "per-mode Elo formulas, persistence, isolation, migration"),
+    ("rooms", "test_rooms.py", "simultaneous rooms, membership and isolated gameplay"),
+    ("lobby", "test_lobby.py", "room list, creation form and client routing"),
+    ("room_storage", "test_room_storage.py", "room-scoped save completions and retry isolation"),
     ("database", "test_database.py", "PostgreSQL persistence (skips without TEST_DATABASE_URL)"),
     ("database_server", "test_database_server.py", "server commit, retry and restart over PostgreSQL"),
     ("ai", "test_ai.py", "probability engine: accuracy, strength, speed"),
@@ -27,8 +30,8 @@ SUITES = [
      "chat, coach, computer opponent, leaderboard, reconnect"),
     ("client", "test_client.py", "two real windows playing each other"),
     ("client_features", "test_client_features.py",
-     "opponent picker, chat, coach, sound, themes, scaling, reconnect"),
-    ("layout", "test_layout.py", "no overlapping or spilling text, 41 scenarios"),
+     "room creation, chat, coach, sound, themes, scaling, reconnect"),
+    ("layout", "test_layout.py", "no overlapping or spilling text in game and lobby screens"),
     ("bot", "test_bot.py", "RL bots: observation, symmetry, solo env (skips without torch)"),
 ]
 

@@ -9,6 +9,10 @@ import socket
 
 # --- client -> server --------------------------------------------------
 JOIN = "join"          # {nickname}
+LIST_ROOMS = "list_rooms"
+CREATE_ROOM = "create_room"
+JOIN_ROOM = "join_room"
+LEAVE_ROOM = "leave_room"
 PICK = "pick"          # {row, col} - plus {layer} in the cube mode
 FLAG = "flag"          # {row, col, layer} - plant or lift a marker
 REMATCH = "rematch"    # {}
@@ -22,6 +26,8 @@ SET_RANKED = "set_ranked"  # {ranked} - toggle Ranked vs Casual match mode
 # (easy/medium/hard) when the player chose the computer on the start screen.
 
 # --- server -> client --------------------------------------------------
+ROOMS = "rooms"
+ROOM_LEFT = "room_left"
 WELCOME = "welcome"        # {client_id, role, message}
 CLIENTS = "clients"        # {count, list:[{id,name,role}]}
 STATE = "state"            # full game snapshot

@@ -44,35 +44,60 @@ def main():
             alice, bob = Wire(port, "Alice"), Wire(port, "Bob")
             clients = [alice, bob]
             wait(lambda: runner.game.phase == "playing", "match start")
+            first_room = runner.srv.selected_room
+            first_match = first_room.match_id
 
             original = runner.srv.board.store.record_match
             attempts = []
 
             def delayed(snapshot):
                 attempts.append(snapshot["id"])
-                if len(attempts) == 1:
+                if snapshot["id"] == first_match and attempts.count(first_match) == 1:
                     raise psycopg.OperationalError("simulated connection loss")
-                assert release.wait(10), "test did not release the database worker"
+                if snapshot["id"] == first_match:
+                    assert release.wait(10), "test did not release the database worker"
                 return original(snapshot)
 
             runner.srv.board.store.record_match = delayed
 
-            def finish():
-                game = runner.game
+            def finish(room):
+                game = room.game
                 for cell in list(game.bombs):
-                    runner.srv._apply_pick(game.current_turn, cell)
+                    room._apply_pick(game.current_turn, cell)
 
-            runner.call(finish)
-            wait(lambda: runner.srv._save_error, "database failure notice")
-            assert runner.srv.pending_match is not None
+            runner.call(finish, first_room)
+            wait(lambda: first_room.save_error, "database failure notice")
+            assert first_room.pending_match is not None
             assert not runner.srv.board.data
             runner.call(runner.srv.reset_all)
-            runner.call(runner.srv._begin_match)
+            runner.call(first_room._begin_match)
             assert runner.game.phase == "ended"
             alice.send(protocol.CHAT, text="Still connected")
             wait(lambda: any(m.get("text") == "Still connected"
                              for m in bob.all(protocol.CHAT_MSG)), "chat during database outage")
             ok(1, "database outage pauses new matches, preserves cache and keeps networking responsive")
+
+            charlie, dana = Wire(port), Wire(port)
+            clients += [charlie, dana]
+            for wire, name in ((charlie, "Charlie"), (dana, "Dana")):
+                wire.send(protocol.JOIN, nickname=name)
+                wait(lambda: wire.get(protocol.WELCOME), "second room lobby identity")
+            charlie.forget(protocol.WELCOME)
+            charlie.send(protocol.CREATE_ROOM, name="Other room", mode="classic", custom={},
+                         bot_level="off", ranked=True)
+            second_id = wait(lambda: charlie.get(protocol.WELCOME), "second room creation")["room_id"]
+            dana.forget(protocol.WELCOME)
+            dana.send(protocol.JOIN_ROOM, room_id=second_id, watch=False)
+            wait(lambda: dana.get(protocol.WELCOME), "second room membership")
+            second_room = runner.srv.rooms[second_id]
+            wait(lambda: second_room.game.phase == "playing", "second room start")
+            runner.call(finish, second_room)
+            wait(lambda: charlie.get(protocol.MATCH_END), "other room commits before retry", 2)
+            assert first_room.pending_match is not None
+            assert second_room.pending_match is None
+            assert set(runner.srv.board.data) == {"Charlie", "Dana"}
+            assert not alice.get(protocol.MATCH_END)
+            ok("1b", "a room saves and announces its result while another room awaits a database retry")
 
             welcome = wait(lambda: bob.get(protocol.WELCOME), "Bob's reconnect token")
             bob2 = Wire(port, "Bob", token=welcome["token"])
@@ -85,14 +110,14 @@ def main():
             assert runner.game.phase == "ended"
 
             release.set()
-            wait(lambda: runner.srv.pending_match is None, "transaction retry", 10)
-            assert attempts[0] == attempts[1]
-            assert sum(row["matches"] for row in runner.srv.board.data.values()) == 2
+            wait(lambda: first_room.pending_match is None, "transaction retry", 10)
+            assert attempts.count(first_match) == 2
+            assert sum(row["matches"] for row in runner.srv.board.data.values()) == 4
             announcement = wait(lambda: alice.get(protocol.MATCH_END), "committed match announcement")
             assert next(p["id"] for p in announcement["players"] if p["name"] == "Bob") == recovered["client_id"]
             with psycopg.connect(test_url) as conn:
-                assert conn.execute("SELECT count(*) FROM matches").fetchone()[0] == 1
-                assert conn.execute("SELECT count(*) FROM match_participants").fetchone()[0] == 2
+                assert conn.execute("SELECT count(*) FROM matches").fetchone()[0] == 2
+                assert conn.execute("SELECT count(*) FROM match_participants").fetchone()[0] == 4
             ok(2, "server retries one match ID; pending reconnects preserve result IDs and joins cannot change seats")
 
             for client in clients:
@@ -103,7 +128,8 @@ def main():
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
             runner = ServerRunner(port)
-            assert sum(row["matches"] for row in runner.srv.board.data.values()) == 2
+            assert sum(row["matches"] for row in runner.srv.board.data.values()) == 4
+            assert not runner.srv.rooms
             ok(3, "server restart reloads PostgreSQL statistics")
         finally:
             release.set()

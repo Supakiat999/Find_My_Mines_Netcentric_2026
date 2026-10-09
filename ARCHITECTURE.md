@@ -372,8 +372,9 @@ Bot seats have no player record; their matches never update Elo.
 `stats.DatabaseLeaderboard` retains existing cached leaderboard reads. One worker
 records an immutable match snapshot; only the game thread applies committed cache
 updates and broadcasts results. The turn loop never waits for a database query.
-Startup loads the cache before accepting players. Results and new matches wait for
-commit; transient failures retry, and permanent errors remain visible to operators.
+Startup loads the cache before accepting players. Result completions carry room and
+match IDs. Only that room waits for commit; transient retries do not block other
+queued room jobs, and permanent errors remain visible to operators.
 
 Each transaction locks its match UUID for idempotency, then player rows in stable
 nickname order. Existing `stats.Leaderboard` calculations run against locked current
@@ -383,3 +384,25 @@ returns the original saved rating changes without incrementing totals twice.
 JSON import preserves existing aggregates but cannot create unknown historical
 matches. Export supports rollback. Pending snapshots and the cache assume one server;
 durable pre-commit recovery and multi-server cache refresh are intentionally deferred.
+
+## Multiple rooms
+
+`Server` owns sockets, connection identities, the room directory, lobby routing,
+and one shared leaderboard/database worker. `Room` owns a `Game`, immutable creation
+settings, seats, spectators, chat, clock, bot, rematch votes, and pending result.
+The main loop drains connection events and updates every room without room threads.
+
+New clients enter the lobby. Creation and membership requests select a room before
+gameplay. Every game action must carry the client's current room ID; the server
+checks authoritative membership. Room snapshots, clocks, chat, hints, and match-end
+messages go only to that room. The client discards stale events after a room change.
+
+Reconnect tokens restore the existing room and seat. Explicitly watching does not
+claim a player seat. Leaving a live match interrupts it rather than awarding a
+forfeit. Empty rooms are removed only when held seats and pending results are gone.
+The admin console selects a room before rendering its hidden board or resetting it.
+
+Rooms remain in memory and disappear on restart. Completed database matches retain
+the room ID and name in their settings snapshot; no persistent room table is needed.
+The lobby protocol replaces automatic game entry, so client and server must run the
+same version.

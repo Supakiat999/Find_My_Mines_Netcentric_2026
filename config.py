@@ -17,6 +17,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL") or None
 # --- Network -----------------------------------------------------------
 # Address the client dials.  Use "127.0.0.1" when the server runs on the
 # same computer, or the LAN IP of the server machine (e.g. "192.168.1.42").
+# SERVER_HOST = "172.20.10.2"
 SERVER_HOST = "127.0.0.1"
 
 # Address the server binds to.  "0.0.0.0" accepts connections from any

@@ -18,15 +18,12 @@ Run:  python server.py
 
 import math
 import queue
-import random
 import secrets
 import socket
 import sys
 import threading
 import time
-import uuid
 from collections import deque
-from datetime import datetime, timezone
 
 import pygame
 
@@ -36,6 +33,7 @@ import config
 import game as game_rules
 import protocol
 import stats as stats_mod
+from room import Room, BOT_ID, BOT_LABELS
 
 WIN_W, WIN_H = 940, 720
 FPS = 30
@@ -53,16 +51,6 @@ WARN = (251, 191, 36)
 BAD = (248, 113, 113)
 HIDDEN_CELL = (44, 55, 74)
 
-# The computer opponent sits in a seat like a player but is not a socket.
-BOT_ID = -1
-BOT_LABELS = {"easy": "Computer (Easy)", "medium": "Computer (Medium)",
-              "hard": "Computer (Hard)"}
-
-CHAT_LIMIT = 120        # characters in one message
-CHAT_HISTORY = 40       # messages kept for people who join late
-CHAT_GAP = 0.6          # seconds between one person's messages
-
-
 class ClientRecord:
     """One connected socket and what we know about it."""
 
@@ -71,7 +59,9 @@ class ClientRecord:
         self.sock = sock
         self.addr = addr
         self.name = None          # set on JOIN
-        self.role = "connecting"  # connecting | player | spectator
+        self.role = "lobby"       # lobby | player | spectator
+        self.room_id = None
+        self.watch = False
         self.connected_at = time.time()
         self.joined_at = None     # set on JOIN - seats follow this, not the
         self.alive = True         # connection order, so a client sitting on
@@ -88,7 +78,9 @@ class ClientRecord:
 
 class Server:
     def __init__(self):
-        self.game = game_rules.Game()
+        self.rooms = {}
+        self.selected_room_id = None
+        self._last_rooms = None
         self.clients = {}                 # client_id -> ClientRecord
         self.clients_lock = threading.Lock()
         self.events = queue.Queue()       # (client_id, message dict)
@@ -96,27 +88,10 @@ class Server:
         self.running = True
         self._next_id = 1
 
-        self.turn_deadline = None         # wall clock when the turn expires
-        self.last_tick_sent = None
-        self.rematch_votes = set()
-        self.first_match_done = False
-        self.paused_left = None           # seconds left when the clock was paused
-
-        self.bot_level = "off"            # off | easy | medium | hard
-        self.bot_ready_at = None          # when the computer will play its move
-        self.ranked = True                # whether matches affect Elo ratings
-        self.rng = random.Random()
-
-        self.chat = deque(maxlen=CHAT_HISTORY)
         path = (stats_mod.default_path() if config.STATS_FILE == "auto"
                 else config.STATS_FILE)
         self.board = (stats_mod.DatabaseLeaderboard(config.DATABASE_URL)
                       if config.DATABASE_URL else stats_mod.Leaderboard(path))
-        self.pending_match = None
-        self._save_error = None
-        self.match_id = None
-        self.match_started_at = None
-
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind((config.BIND_HOST, config.SERVER_PORT))
@@ -255,6 +230,10 @@ class Server:
             return None
         rec.alive = False
         try:
+            rec.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
             rec.sock.close()
         except OSError:
             pass
@@ -292,415 +271,130 @@ class Server:
     # ------------------------------------------------------------------
     # who is who, including the computer
     # ------------------------------------------------------------------
-    def _bot_seated(self):
-        return BOT_ID in self.game.players
-
-    def _bot_name(self):
-        return BOT_LABELS.get(self.bot_level, "Computer")
-
-    def _names(self):
-        """Player id -> display name, for humans and the computer alike."""
-        names = {c.id: c.name for c in self._joined_clients()}
-        if self._bot_seated():
-            names[BOT_ID] = self._bot_name()
-        return names
-
-    def _anyone_away(self):
-        return any(c.away_since is not None for c in self._joined_clients())
-
     def _unique_name(self, wanted):
         taken = {c.name for c in self._joined_clients() if c.name}
         taken.update(BOT_LABELS.values())
         name = wanted
         n = 2
         while name in taken:
-            name = "%s (%d)" % (wanted, n)
+            suffix = " (%d)" % n
+            name = wanted[:16 - len(suffix)] + suffix
             n += 1
         return name
 
     # ------------------------------------------------------------------
     # snapshots pushed to clients
     # ------------------------------------------------------------------
-    def _clients_payload(self):
-        humans = self._joined_clients()
-        return {
-            "count": len([c for c in humans if c.alive]),
-            "list": [{"id": c.id, "name": c.name, "role": c.role,
-                      "away": not c.alive} for c in humans],
-            "bots": ([{"id": BOT_ID, "name": self._bot_name()}]
-                     if self._bot_seated() else []),
-        }
-
-    def _seconds_left(self):
-        if self.turn_deadline is None:
-            return 0
-        return max(0, int(round(self.turn_deadline - time.time())))
-
-    def _away_payload(self):
-        now = time.time()
-        return [{"id": c.id, "name": c.name,
-                 "seconds": max(0, int(config.RECONNECT_GRACE
-                                       - (now - c.away_since)))}
-                for c in self._joined_clients() if c.away_since is not None]
-
-    def _state_payload(self):
-        g = self.game
-        names = self._names()
-        players = []
-        for pid in g.players:
-            name = names.get(pid, "?")
-            entry = {"id": pid, "name": name, "score": g.scores.get(pid, 0),
-                     "bot": pid == BOT_ID,
-                     "hints_left": g.hints_left.get(pid, 0)}
-            if pid != BOT_ID:
-                record = self.board.record_of(name)
-                entry["record"] = {k: record[k] for k in
-                                   ("wins", "losses", "draws", "points")}
-                elo_val = self.board.get_elo(name, g.mode)
-                entry["elo"] = elo_val
-                tier_info = stats_mod.get_tier(elo_val)
-                entry["tier"] = tier_info[0]
-                entry["tier_color"] = tier_info[1]
-                entry["peak_elo"] = self.board.get_peak_elo(name, g.mode)
-                entry["provisional"] = self.board.is_provisional(name, g.mode)
-                entry["mode_matches"] = self.board.get_mode_matches(name, g.mode)
-            players.append(entry)
-        away = self._away_payload()
-        return {
-            "phase": g.phase,
-            "mode": g.mode,
-            "mode_label": game_rules.MODE_LABELS.get(g.mode, g.mode),
-            "dims": list(g.dims),             # (rows, cols) or (layers, rows, cols)
-            "grid_size": g.grid_size,
-            "board": g.board_view(),          # never reveals unfound bombs
-            "flags": g.flag_view(),
-            "bomb_owners": g.owner_view(),
-            "last_move": g.last_move_view(),
-            "safe_left": g.safe_left,
-            "bombs_are_bad": g.bombs_are_bad,
-            "players": players,
-            "current_turn": g.current_turn,
-            "bombs_left": g.bombs_left,
-            "bombs_total": g.bomb_count,
-            "seconds_left": self._seconds_left(),
-            "turn_seconds": self.game.turn_seconds,
-            "custom": dict(self.game.custom),
-            "custom_limits": dict(config.CUSTOM_LIMITS),
-            "rematch_votes": sorted(self.rematch_votes),
-            "spectators": [c.name for c in self._joined_clients()
-                           if c.role == "spectator"],
-            "bot_level": self.bot_level,
-            "bot_seated": self._bot_seated(),
-            "bot_learned": botbrain.ready(g),    # trained model, not the solver
-            "away": away,
-            "paused": bool(away) and g.phase == game_rules.PHASE_PLAYING,
-            "ranked": self.ranked,
-            "leaderboard": self.board.top(5, mode=g.mode),
-        }
-
-    def push_clients(self):
-        self._broadcast(protocol.CLIENTS, **self._clients_payload())
-
-    def push_state(self):
-        self._broadcast(protocol.STATE, **self._state_payload())
-
-    def _send_welcome(self, rec, reconnected=False):
-        greeting = ("Welcome back, %s." if reconnected else "Welcome, %s.") % rec.name
-        self._send(rec, protocol.WELCOME,
-                   client_id=rec.id, role=rec.role, message=greeting,
-                   token=rec.token, reconnected=reconnected,
-                   grid_size=self.game.grid_size,
-                   dims=list(self.game.dims),
-                   mode=self.game.mode,
-                   bombs_total=self.game.bomb_count,
-                   turn_seconds=self.game.turn_seconds,
-                   bot_level=self.bot_level,
-                   chat=list(self.chat),
-                   leaderboard=self.board.top(5, mode=self.game.mode))
-
     # ------------------------------------------------------------------
     # chat
     # ------------------------------------------------------------------
-    def _announce(self, text, player_id=0, name="", system=False):
-        entry = {"id": player_id, "name": name, "text": text,
-                 "system": system, "t": int(time.time())}
-        self.chat.append(entry)
-        self._broadcast(protocol.CHAT_MSG, **entry)
-
-    def _note(self, text):
-        """A line of table talk from the server itself."""
-        self._announce(text, system=True)
-
-    def _on_chat(self, rec, msg):
-        if not rec.name:
-            return
-        text = " ".join(str(msg.get("text", "")).split())[:CHAT_LIMIT]
-        if not text:
-            return
-        now = time.time()
-        if now - rec.last_chat < CHAT_GAP:
-            self._send(rec, protocol.ERROR, message="slow down a little")
-            return
-        rec.last_chat = now
-        self._announce(text, rec.id, rec.name)
-
     # ------------------------------------------------------------------
     # seating and match flow
     # ------------------------------------------------------------------
-    def _bot_wanted(self, humans):
-        """The computer sits down only opposite exactly one human."""
-        return self.bot_level in ai.LEVELS and humans == 1
-
-    def _reseat(self):
-        """First MAX_PLAYERS joiners play; anyone later watches.  With one
-        human and the computer switched on, the computer takes the other seat.
-
-        Changing who is seated ends the match in progress - a match with
-        different players is a different match.
-        """
-        before = list(self.game.players)
-        joined = self._joined_clients()
-        if self.pending_match is not None:
-            for c in joined:
-                if c.id not in before:
-                    c.role = "spectator"
-            return
-        seats = [c.id for c in joined[:config.MAX_PLAYERS]]
-        for c in joined:
-            c.role = "player" if c.id in seats else "spectator"
-        if self._bot_wanted(len(joined)):
-            seats = seats[:1] + [BOT_ID]
-        if seats != before:
-            self.game.seat_players(seats)
-            if (set(seats) != set(before)
-                    and self.game.phase != game_rules.PHASE_WAITING):
-                self._halt("Match halted - the seating changed")
-
-    def _halt(self, reason):
-        """Stop the current match and wait for a fresh start."""
-        self.game.phase = game_rules.PHASE_WAITING
-        self.game.current_turn = None
-        self._stop_turn_clock()
-        self.rematch_votes.clear()
-        self.bot_ready_at = None
-        self.paused_left = None
-        self.say(reason)
-
-    def _begin_match(self, first_player=None):
-        if self.pending_match is not None:
-            return
-        if not self.game.start_match(first_player):
-            return
-        self.match_id = str(uuid.uuid4())
-        self.match_started_at = datetime.now(timezone.utc).isoformat()
-        self.rematch_votes.clear()
-        self.bot_ready_at = None
-        self.paused_left = None
-        self._start_turn_clock()
-        self.first_match_done = True
-        names = self._names()
-        self.say("Match started - %s goes first"
-                 % names.get(self.game.current_turn, "?"))
-
-    def _start_turn_clock(self):
-        self.turn_deadline = time.time() + self.game.turn_seconds
-        self.last_tick_sent = None
-
-    def _stop_turn_clock(self):
-        self.turn_deadline = None
-        self.last_tick_sent = None
-
-    def _pause_clock(self):
-        """Freeze the turn while a player is away."""
-        if self.turn_deadline is not None:
-            self.paused_left = max(0.5, self.turn_deadline - time.time())
-        self._stop_turn_clock()
-
-    def _resume_clock(self):
-        if (self.paused_left is not None and not self._anyone_away()
-                and self.game.phase == game_rules.PHASE_PLAYING):
-            self.turn_deadline = time.time() + self.paused_left
-            self.last_tick_sent = None
-            self.paused_left = None
-
-    def _maybe_autostart(self):
-        """Kick off a match as soon as two players are seated - and nobody
-        has dropped out, since a match should not start without them."""
-        if self._anyone_away():
-            return
-        if self.game.phase == game_rules.PHASE_WAITING and self.game.can_start():
-            # First match of the session: the server picks the starter at
-            # random.  Later ones follow the previous winner.
-            first = None if not self.first_match_done else self.game.last_winner
-            self._begin_match(first)
-
-    def _end_match(self):
-        if self.pending_match is not None:
-            return
-        self._stop_turn_clock()
-        g = self.game
-        names = self._names()
-        players = [{"id": pid, "name": names.get(pid, "?"),
-                    "score": g.scores.get(pid, 0)} for pid in g.players]
-        detail = []
-        for row in g.match_stats():
-            detail.append({**row, "name": names.get(row["id"], "?"),
-                           "score": g.scores.get(row["id"], 0)})
-
-        # humans go on the hall of fame; the computer does not
-        results = []
-        for p in players:
-            if p["id"] == BOT_ID:
-                continue
-            if g.last_winner is None:
-                outcome = "draw"
-            else:
-                outcome = "win" if p["id"] == g.last_winner else "loss"
-            results.append({"name": p["name"], "result": outcome,
-                            "points": p["score"]})
-        context = {"players": players, "detail": detail, "results": results,
-                   "mode": g.mode, "ranked": self.ranked,
-                   "winner": g.last_winner, "names": names,
-                   "bot": self._bot_seated()}
-        if isinstance(self.board, stats_mod.DatabaseLeaderboard):
-            participants = []
-            for seat, p in enumerate(players, 1):
-                pid = p["id"]
-                stat = g.stats.get(pid, {})
-                participants.append({
-                    "seat": seat, "name": p["name"],
-                    "bot_level": self.bot_level if pid == BOT_ID else None,
-                    "result": ("draw" if g.last_winner is None else
-                               "win" if pid == g.last_winner else "loss"),
-                    "score": p["score"], "picks": stat.get("picks", 0),
-                    "hits": stat.get("kept", 0),
-                    "best_chain": stat.get("best_chain", 0),
-                })
-            self.pending_match = context
-            self.board.submit({
-                "id": self.match_id, "mode": g.mode, "ranked": self.ranked,
-                "started_at": self.match_started_at,
-                "ended_at": datetime.now(timezone.utc).isoformat(),
-                "settings": {"dims": list(g.dims), "bombs": g.bomb_count,
-                             "turn_seconds": g.turn_seconds,
-                             "weighted": g.hints_weighted,
-                             "bombs_are_bad": g.bombs_are_bad},
-                "results": results, "participants": participants,
-            })
-            self._announce("Match finished - saving result.", system=True)
-            return
-        changes = self.board.record_match(results, mode=g.mode, ranked=self.ranked)
-        self._publish_match(context, changes)
-
     def _poll_database(self):
         if not isinstance(self.board, stats_mod.DatabaseLeaderboard):
             return
         while True:
             try:
-                data, changes, error = self.board.completed.get_nowait()
+                context, data, changes, error = self.board.completed.get_nowait()
             except queue.Empty:
                 return
-            if error:
-                if error != self._save_error:
-                    self._save_error = error
-                    self.say("Result saving pending: %s" % error)
-                    self._announce("Result saving pending - database error. "
-                                   "New matches are paused.", system=True)
-                continue
-            self.board.data = data
-            context = self.pending_match
-            self.pending_match = None
-            self._save_error = None
+            if not error:
+                self.board.data = data
             if context is not None:
-                self._publish_match(context, changes)
-                self._reseat()
-                self._maybe_autostart()
-                self.push_state()
+                room_id, match_id = context
+                room = self.rooms.get(room_id)
+                if room and room.match_id == match_id:
+                    room.accept_saved(changes, error)
 
-    def _publish_match(self, context, elo_changes):
-        players, detail = context["players"], context["detail"]
-        results, names = context["results"], context["names"]
-        winner, mode, ranked = context["winner"], context["mode"], context["ranked"]
+    @property
+    def selected_room(self):
+        return self.rooms.get(self.selected_room_id)
 
-        elo_payload = {}
-        for p in players:
-            name = p["name"]
-            if name in elo_changes:
-                elo_payload[p["id"]] = elo_changes[name]
-                elo_payload[name] = elo_changes[name]
-
-        if context["bot"] and self._bot_seated():
-            self.rematch_votes.add(BOT_ID)      # the computer always says yes
-        self._broadcast(
-            protocol.MATCH_END,
-            winner_id=winner,
-            draw=winner is None,
-            players=players,
-            stats=detail,
-            mode=mode,
-            ranked=ranked,
-            elo_changes=elo_payload,
-            leaderboard=self.board.top(5, mode=mode),
-        )
-        if elo_changes:
-            parts = []
-            for name, ch in elo_changes.items():
-                sign = "+" if ch["delta"] > 0 else ""
-                extra = []
-                if ch.get("streak_bonus"):
-                    extra.append("+%d streak" % ch["streak_bonus"])
-                if ch.get("promoted"):
-                    extra.append("PROMOTED TO %s!" % ch["promoted"].upper())
-                extra_str = (" [%s]" % ", ".join(extra)) if extra else ""
-                parts.append("%s (%s%d -> %d)%s" % (name, sign, ch["delta"], ch["after"], extra_str))
-            self._announce("Elo: " + " | ".join(parts), system=True)
-            self.say("Elo: %s" % " | ".join(parts))
-        elif not ranked and len(results) == 2:
-            self._announce("Casual match completed - no rating changes.", system=True)
-        if winner is None:
-            self.say("Match over - draw")
-        elif winner in names:
-            self.say("Match over - %s wins" % names[winner])
-        else:
-            self.say("Match over")
-
-    def set_mode(self, mode):
-        """Mode buttons on the console.  The server owns which game is played,
-        so a change deals a fresh board for everyone at once."""
-        if self.pending_match is not None or mode == self.game.mode:
+    def push_rooms(self, force=False):
+        rooms = [room.summary(self._joined_clients()) for room in self.rooms.values()]
+        if not force and rooms == self._last_rooms:
             return
-        self.game.set_mode(mode)
-        self.game.reset_scores()
-        self.rematch_votes.clear()
-        self._stop_turn_clock()
-        self.bot_ready_at = None
-        self.paused_left = None
-        self.first_match_done = False
-        self._reseat()
-        self.say("Mode: %s" % game_rules.MODE_LABELS.get(mode, mode))
-        self._note("Mode is now %s" % game_rules.MODE_LABELS.get(mode, mode))
-        self._broadcast(protocol.SERVER_RESET)
-        self.push_clients()
-        self._maybe_autostart()
-        self.push_state()
+        self._last_rooms = rooms
+        for rec in self._joined_clients():
+            self._send(rec, protocol.ROOMS, rooms=rooms)
+
+    def _welcome_lobby(self, rec, reconnected=False):
+        self._send(rec, protocol.WELCOME, client_id=rec.id, token=rec.token,
+                   role="lobby", room_id=None, reconnected=reconnected,
+                   message="Welcome, %s." % rec.name, leaderboard=self.board.top(5), chat=[])
+
+    def _enter_room(self, rec, room, watch=False):
+        if rec.room_id is not None:
+            raise ValueError("leave your current room first")
+        if not watch and not room.summary(self._joined_clients())["joinable"]:
+            raise ValueError("room is full or saving; choose Watch")
+        rec.room_id = room.id
+        rec.watch = watch
+        rec.joined_at = time.time()
+        rec.last_chat = 0
+        room._reseat()
+        room._send_welcome(rec)
+        room._note("%s joined" % rec.name)
+        room.push_clients()
+        room._maybe_autostart()
+        room.push_state()
+        self.push_rooms()
+
+    def _create_room(self, rec, msg):
+        if rec.room_id is not None:
+            raise ValueError("leave your current room first")
+        room = Room(self, msg.get("name"), msg.get("mode", "classic"),
+                    msg.get("custom", {}), msg.get("bot_level", "off"),
+                    msg.get("ranked", True))
+        self.rooms[room.id] = room
+        if self.selected_room_id is None:
+            self.selected_room_id = room.id
+        self._enter_room(rec, room)
+
+    def _join_room(self, rec, msg):
+        room_id, watch = msg.get("room_id"), msg.get("watch", False)
+        if not isinstance(room_id, str) or type(watch) is not bool:
+            raise ValueError("invalid room membership request")
+        room = self.rooms.get(room_id)
+        if room is None:
+            raise ValueError("room no longer exists")
+        self._enter_room(rec, room, watch)
+
+    def _leave_room(self, rec):
+        room = self.rooms.get(rec.room_id)
+        if room is None:
+            return
+        rec.room_id = None
+        rec.role = "lobby"
+        rec.watch = False
+        room.rematch_votes.discard(rec.id)
+        room._reseat()
+        room._resume_clock()
+        room.push_clients()
+        room._maybe_autostart()
+        room.push_state()
+        self._send(rec, protocol.ROOM_LEFT, room_id=room.id)
+        self._welcome_lobby(rec)
+        self._cleanup_rooms()
+        self.push_rooms()
+
+    def _cleanup_rooms(self):
+        for room_id, room in list(self.rooms.items()):
+            if not room._joined_clients() and room.pending_match is None:
+                del self.rooms[room_id]
+        if self.selected_room_id not in self.rooms:
+            self.selected_room_id = next(iter(self.rooms), None)
+        self.push_rooms()
+
+    def update_clock(self):
+        for room in list(self.rooms.values()):
+            room.update_clock()
+        self._cleanup_rooms()
 
     def reset_all(self):
-        """The Reset button: clear the board and both scores, then re-deal."""
-        if self.pending_match is not None:
-            self.say("Reset blocked - result saving pending")
-            return
-        self.game.full_reset()
-        self.rematch_votes.clear()
-        self._stop_turn_clock()
-        self.bot_ready_at = None
-        self.paused_left = None
-        self.first_match_done = False
-        self._reseat()
-        self.say("Server reset - board and scores cleared")
-        self._broadcast(protocol.SERVER_RESET)
-        self.push_clients()
-        self._maybe_autostart()
-        self.push_state()
+        if self.selected_room is not None:
+            self.selected_room.reset_all()
 
     # ------------------------------------------------------------------
     # message handling (main thread only)
@@ -715,6 +409,8 @@ class Server:
             self._handle(client_id, msg)
 
     def _handle(self, client_id, msg):
+        if not isinstance(msg, dict):
+            return
         kind = msg.get("type")
         if kind == "__connected__":
             rec = self._client(client_id)
@@ -722,51 +418,57 @@ class Server:
                 self.say("Connection from %s:%d" % rec.addr)
             return
         if kind == "__disconnected__":
-            self._on_disconnect(client_id)
+            rec = self._client(client_id)
+            if rec:
+                room = self.rooms.get(rec.room_id)
+                if room:
+                    room._on_disconnect(client_id)
+                else:
+                    self._drop_client(client_id)
+                self._cleanup_rooms()
+                self.push_rooms()
             return
 
         rec = self._client(client_id)
         if rec is None:
             return
-        if self.pending_match is not None and kind not in (protocol.JOIN, protocol.CHAT):
-            self._send(rec, protocol.ERROR, message="result saving pending")
-            return
         if kind == protocol.JOIN:
             self._on_join(rec, msg)
-        elif kind == protocol.PICK:
-            self._on_pick(rec, msg)
-        elif kind == protocol.FLAG:
-            self._on_flag(rec, msg)
-        elif kind == protocol.REMATCH:
-            self._on_rematch(rec)
-        elif kind == protocol.SET_MODE:
-            self._on_set_mode(rec, msg)
-        elif kind == protocol.SET_CUSTOM:
-            self._on_set_custom(rec, msg)
-        elif kind == protocol.CHAT:
-            self._on_chat(rec, msg)
-        elif kind == protocol.HINT:
-            self._on_hint(rec)
-        elif kind == protocol.SET_BOT:
-            self._on_set_bot(rec, msg)
-        elif kind == protocol.SET_RANKED:
-            self._on_set_ranked(rec, msg)
-
-    def _on_set_ranked(self, rec, msg):
-        ranked = bool(msg.get("ranked", True))
-        if ranked == self.ranked:
             return
-        self.ranked = ranked
-        tag = "Ranked" if self.ranked else "Casual"
-        self.say("%s changed room to %s" % (rec.name, tag))
-        self._announce("Room match type is now %s" % tag, system=True)
-        if self.game.phase != game_rules.PHASE_WAITING:
-            self.first_match_done = False
-            self.game.reset_scores()
-            self._halt("Match restarted - match mode changed to %s" % tag)
-            self._broadcast(protocol.SERVER_RESET)
-            self._maybe_autostart()
-        self.push_state()
+        if not rec.name:
+            self._send(rec, protocol.ERROR, message="join with a nickname first")
+            return
+        try:
+            if kind == protocol.LIST_ROOMS:
+                self.push_rooms(force=True)
+            elif kind == protocol.CREATE_ROOM:
+                self._create_room(rec, msg)
+            elif kind == protocol.JOIN_ROOM:
+                self._join_room(rec, msg)
+            elif kind == protocol.LEAVE_ROOM:
+                if "room_id" in msg and msg["room_id"] != rec.room_id:
+                    raise ValueError("stale room leave request")
+                self._leave_room(rec)
+            elif kind in (protocol.SET_MODE, protocol.SET_CUSTOM, protocol.SET_BOT, protocol.SET_RANKED):
+                raise ValueError("room settings are fixed; create another room")
+            else:
+                room = self.rooms.get(rec.room_id)
+                if room is None or msg.get("room_id") != room.id:
+                    raise ValueError("join a room before sending game actions")
+                if room.pending_match is not None and kind != protocol.CHAT:
+                    raise ValueError("result saving pending")
+                if kind == protocol.PICK:
+                    room._on_pick(rec, msg)
+                elif kind == protocol.FLAG:
+                    room._on_flag(rec, msg)
+                elif kind == protocol.REMATCH:
+                    room._on_rematch(rec)
+                elif kind == protocol.CHAT:
+                    room._on_chat(rec, msg)
+                elif kind == protocol.HINT:
+                    room._on_hint(rec)
+        except (ValueError, TypeError, OverflowError) as exc:
+            self._send(rec, protocol.ERROR, room_id=rec.room_id, message=str(exc))
 
     def _on_join(self, rec, msg):
         if rec.name:
@@ -778,329 +480,45 @@ class Server:
         if token:
             for old in self._joined_clients():
                 if old is not rec and old.token == token:
-                    self._reattach(rec, old)
+                    room = self.rooms.get(old.room_id)
+                    rec.room_id = old.room_id
+                    rec.watch = old.watch
+                    if room:
+                        room._reattach(rec, old)
+                    else:
+                        rec.name, rec.token, rec.joined_at = old.name, old.token, old.joined_at
+                        self._drop_client(old.id)
+                        self._welcome_lobby(rec, reconnected=True)
+                    self.push_rooms(force=True)
                     return
 
-        wanted = str(msg.get("nickname", "")).strip()[:16] or "Player"
+        nickname = msg.get("nickname", "")
+        if not isinstance(nickname, str) or not nickname.strip().isprintable():
+            self._send(rec, protocol.ERROR, message="nickname must contain printable characters")
+            return
+        wanted = nickname.strip()[:16]
         rec.name = self._unique_name(wanted)
         rec.joined_at = time.time()
-        self._reseat()
-        self._send_welcome(rec)
-        self.say("%s joined as %s (%d online)"
-                 % (rec.name, rec.role, len([c for c in self._joined_clients()
-                                             if c.alive])))
-        self._note("%s joined" % rec.name)
-        # "Play the computer" chosen on the start screen: only the first
-        # person in can have it, a second arrival finds the seat taken.
-        if (msg.get("vs") in ai.LEVELS and rec.role == "player"
-                and len(self._joined_clients()) == 1):
-            self._on_set_bot(rec, {"level": msg["vs"]})
-        self.push_clients()
-        self._maybe_autostart()
-        self.push_state()
-
-    def _reattach(self, new, old):
-        """Give a returning player their seat, score and turn back."""
-        new.name = old.name
-        new.joined_at = old.joined_at
-        new.role = old.role
-        new.token = old.token
-        new.away_since = None
-        self.game.rename_player(old.id, new.id)
-        if self.pending_match is not None:
-            context = self.pending_match
-            for row in context["players"] + context["detail"]:
-                if row["id"] == old.id:
-                    row["id"] = new.id
-            if context["winner"] == old.id:
-                context["winner"] = new.id
-            context["names"][new.id] = context["names"].pop(old.id, old.name)
-        if old.id in self.rematch_votes:
-            self.rematch_votes.discard(old.id)
-            self.rematch_votes.add(new.id)
-        with self.clients_lock:
-            self.clients.pop(old.id, None)
-        old.alive = False
-        try:                        # a half-dead connection may still be open
-            old.sock.close()
-        except OSError:
-            pass
-        self._send_welcome(new, reconnected=True)
-        self.say("%s reconnected" % new.name)
-        self._note("%s is back" % new.name)
-        self._resume_clock()
-        self.push_clients()
-        self._maybe_autostart()
-        self.push_state()
-
-    def _cell_from(self, msg):
-        """Coordinates off the wire, shaped for the mode in play."""
-        row, col = msg.get("row", -1), msg.get("col", -1)
-        if self.game.is_3d:
-            return (msg.get("layer", 0), row, col)
-        return (row, col)
-
-    def _on_pick(self, rec, msg):
-        if self._anyone_away() and self.game.phase == game_rules.PHASE_PLAYING:
-            self._send(rec, protocol.ERROR,
-                       message="paused - waiting for a player to reconnect")
-            return
-        self._apply_pick(rec.id, self._cell_from(msg), rec)
-
-    def _apply_pick(self, player_id, cell, rec=None):
-        """One pick, from a human or the computer alike."""
-        result = self.game.pick(player_id, cell)
-        if not result.get("ok"):
-            if rec is not None:
-                self._send(rec, protocol.ERROR,
-                           message=result.get("reason", "invalid"))
-            return result
-        who = self._names().get(player_id, "?")
-        where = "(%s)" % ",".join(str(v) for v in cell)
-        if result["is_bomb"]:
-            if self.game.bombs_are_bad:
-                self.say("%s hit a BOMB at %s - turn lost" % (who, where))
-            else:
-                self.say("%s found a BOMB at %s - keeps the turn" % (who, where))
-                if config.RESET_TIMER_ON_BOMB and not result["match_over"]:
-                    self._start_turn_clock()
-        elif result["opened"] > 1:
-            self.say("%s cleared %d slots from %s" % (who, result["opened"], where))
-        else:
-            self.say("%s opened %s - %s nearby" % (who, where, result["value"]))
-        if result["match_over"]:
-            self._end_match()
-        elif result["turn_changed"]:
-            self._start_turn_clock()
-        self.push_state()
-        return result
-
-    def _on_flag(self, rec, msg):
-        """Markers are advisory - they only block the player who set them."""
-        if rec.role == "player" and self.game.toggle_flag(rec.id,
-                                                          self._cell_from(msg)):
-            self.push_state()
-
-    def _on_set_mode(self, rec, msg):
-        """Players may switch the game from their own window.
-
-        The server still owns the decision - it validates the mode and
-        deals the new board - but players should not have to walk over to
-        the server console to find the other games.
-        """
-        mode = msg.get("mode")
-        if rec.role != "player":
-            self._send(rec, protocol.ERROR, message="only players can change mode")
-            return
-        if mode not in game_rules.MODES:
-            return
-        self.say("%s switched the mode" % rec.name)
-        self.set_mode(mode)
-
-    def _on_set_custom(self, rec, msg):
-        """Board size, bomb count and rules for the custom game.
-
-        Whatever a client sends is clamped by game.clamp_custom before it
-        is used, so a hand-crafted message cannot ask for a 500x500 board
-        or more bombs than slots.
-        """
-        if rec.role != "player":
-            self._send(rec, protocol.ERROR,
-                       message="only players can change the settings")
-            return
-        settings = msg.get("settings")
-        if not isinstance(settings, dict):
-            return
-        applied = self.game.set_custom({**self.game.custom, **settings})
-        self.say("%s set %dx%d%s, %d bombs, %ds"
-                 % (rec.name, applied["size"], applied["size"],
-                    "x%d" % applied["size"] if applied["shape"] == "cube" else "",
-                    applied["bombs"], applied["turn_seconds"]))
-        if self.game.mode == game_rules.MODE_CUSTOM:
-            self.rematch_votes.clear()
-            self._stop_turn_clock()
-            self.bot_ready_at = None
-            self.first_match_done = False
-            self.game.reset_scores()
-            self._broadcast(protocol.SERVER_RESET)
-            self._maybe_autostart()
-        self.push_state()
-
-    def _on_rematch(self, rec):
-        if self.game.phase != game_rules.PHASE_ENDED or rec.role != "player":
-            return
-        self.rematch_votes.add(rec.id)
-        self.say("%s wants a rematch (%d/%d)"
-                 % (rec.name, len(self.rematch_votes), len(self.game.players)))
-        if self.rematch_votes >= set(self.game.players):
-            # The winner of the last match starts the next one.
-            self._begin_match(self.game.last_winner)
-        self.push_state()
-
-    # -- the AI coach ---------------------------------------------------
-    def _on_hint(self, rec):
-        """Advice on the best slot, from the same engine the computer uses.
-
-        It is given only what any player can see, and each player gets a
-        limited number of questions per match.
-        """
-        g = self.game
-        if rec.role != "player":
-            self._send(rec, protocol.ERROR, message="only players can ask the coach")
-            return
-        if g.phase != game_rules.PHASE_PLAYING:
-            self._send(rec, protocol.ERROR, message="no match in progress")
-            return
-        if g.current_turn != rec.id:
-            self._send(rec, protocol.ERROR, message="ask the coach on your own turn")
-            return
-        if not g.use_hint(rec.id):
-            self._send(rec, protocol.ERROR, message="you have no hints left")
-            return
-        info = g.public_info()
-        advice = ai.advise(info["view"], info["dims"], info["weighted"],
-                           info["bombs_left"], info["bombs_are_bad"])
-        if advice is None:
-            g.hints_left[rec.id] += 1                 # nothing to advise: refund
-            self._send(rec, protocol.ERROR, message="nothing left to advise on")
-            return
-        heat = [{"cell": list(cell), "p": round(p, 3)}
-                for cell, p in advice["probs"].items()]
-        self._send(rec, protocol.HINT_RESULT,
-                   cell=list(advice["cell"]), p=round(advice["p"], 3),
-                   exact=advice["exact"],
-                   goal="avoid" if info["bombs_are_bad"] else "collect",
-                   heat=heat, left=g.hints_left.get(rec.id, 0))
-        self.say("%s asked the coach (%d left)" % (rec.name, g.hints_left[rec.id]))
-        self.push_state()
-
-    # -- the computer opponent -----------------------------------------
-    def _on_set_bot(self, rec, msg):
-        level = msg.get("level")
-        if rec.role != "player":
-            self._send(rec, protocol.ERROR, message="only players can do that")
-            return
-        if level != "off" and level not in ai.LEVELS:
-            return
-        if level != "off" and len(self._joined_clients()) >= 2:
-            self._send(rec, protocol.ERROR,
-                       message="two players are already seated")
-            return
-        if level == self.bot_level:
-            return
-        self.bot_level = level
-        if level == "off":
-            self.say("%s switched the computer off" % rec.name)
-            self._note("Computer opponent off")
-        else:
-            self.say("%s chose to play the computer (%s)" % (rec.name, level))
-            self._note("Playing the computer on %s" % level)
-        self._reseat()
-        if self.game.phase != game_rules.PHASE_WAITING:
-            # same seats but a different opponent: start over fairly
-            self._halt("Match restarted against a new opponent")
-        self.push_clients()
-        self._maybe_autostart()
-        self.push_state()
-
-    def _drive_bot(self):
-        """Let the computer take its turn after a short, human-feeling pause."""
-        g = self.game
-        if (not self._bot_seated() or g.phase != game_rules.PHASE_PLAYING
-                or g.current_turn != BOT_ID or self._anyone_away()):
-            self.bot_ready_at = None
-            return
-        now = time.time()
-        if self.bot_ready_at is None:
-            lo, hi = config.BOT_THINK_SECONDS
-            self.bot_ready_at = now + self.rng.uniform(lo, hi)
-            return
-        if now < self.bot_ready_at:
-            return
-        self.bot_ready_at = None
-        cell = botbrain.choose_cell(g, self.bot_level, self.rng)
-        if cell is None:
-            g.pass_turn()
-            self.push_state()
-            return
-        self._apply_pick(BOT_ID, cell)
+        self._welcome_lobby(rec)
+        self.say("%s joined the lobby" % rec.name)
+        self.push_rooms(force=True)
 
     # -- leaving and coming back ---------------------------------------
-    def _on_disconnect(self, client_id):
-        rec = self._client(client_id)
-        if rec is None:
-            return                      # already replaced by a reconnect
-        if (rec.name and rec.role == "player" and config.RECONNECT_GRACE > 0
-                and rec.away_since is None):
-            # Wi-Fi drops are common.  Hold the seat, pause the clock, and
-            # give them a window to come back before giving the seat up.
-            rec.alive = False
-            rec.away_since = time.time()
-            try:
-                rec.sock.close()
-            except OSError:
-                pass
-            if self.game.phase == game_rules.PHASE_PLAYING:
-                self._pause_clock()
-            self.say("%s lost connection - holding the seat for %ds"
-                     % (rec.name, config.RECONNECT_GRACE))
-            self._note("%s lost connection" % rec.name)
-            self.push_clients()
-            self.push_state()
-            return
-        self._finalize_drop(client_id)
-
-    def _finalize_drop(self, client_id):
-        rec = self._drop_client(client_id)
-        if rec is None:
-            return
-        self.say("%s disconnected" % rec.label)
-        if rec.name:
-            self._note("%s left" % rec.name)
-        self.rematch_votes.discard(client_id)
-        self._reseat()
-        if not self._anyone_away():
-            self._resume_clock()
-        self.push_clients()
-        self._maybe_autostart()
-        self.push_state()
-
-    def _expire_away(self):
-        now = time.time()
-        for rec in self._joined_clients():
-            if (rec.away_since is not None
-                    and now - rec.away_since > config.RECONNECT_GRACE):
-                self.say("%s did not come back" % rec.name)
-                self._finalize_drop(rec.id)
-
     # ------------------------------------------------------------------
     # turn clock
     # ------------------------------------------------------------------
-    def update_clock(self):
-        self._expire_away()
-        self._drive_bot()
-        if self.game.phase != game_rules.PHASE_PLAYING or self.turn_deadline is None:
-            return
-        left = self._seconds_left()
-        if left != self.last_tick_sent:
-            self.last_tick_sent = left
-            self._broadcast(protocol.TICK, seconds_left=left,
-                            current_turn=self.game.current_turn)
-        if time.time() >= self.turn_deadline:
-            names = self._names()
-            self.say("%s ran out of time" % names.get(self.game.current_turn, "?"))
-            self.game.pass_turn()
-            self._start_turn_clock()
-            self.push_state()
-
     def shutdown(self):
         self.running = False
         if isinstance(self.board, stats_mod.DatabaseLeaderboard):
-            if self.pending_match is not None:
+            if any(room.pending_match is not None for room in self.rooms.values()):
                 self.say("WARNING: closing with a pending result; check database "
                          "before restarting. Uncommitted results are not durable.")
             self.board.close()
         for rec in self._ordered_clients():
+            try:
+                rec.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 rec.sock.close()
             except OSError:
@@ -1128,7 +546,8 @@ class ServerUI:
         self.f_cell = self._font(20, bold=True)
         self.reset_rect = pygame.Rect(WIN_W - 200, 22, 168, 44)
         self.reset_hover = False
-        self.mode_rects = self._mode_rects()
+        self.previous_room_rect = pygame.Rect(32, 100, 100, 34)
+        self.next_room_rect = pygame.Rect(600, 100, 100, 34)
 
     @staticmethod
     def _font(size, bold=False):
@@ -1180,10 +599,13 @@ class ServerUI:
                     if self.reset_rect.collidepoint(event.pos):
                         srv.reset_all()
                     else:
-                        for mode, box in self.mode_rects:
-                            if box.collidepoint(event.pos):
-                                srv.set_mode(mode)
-                                break
+                        ids = list(srv.rooms)
+                        if ids:
+                            index = ids.index(srv.selected_room_id)
+                            if self.previous_room_rect.collidepoint(event.pos):
+                                srv.selected_room_id = ids[(index - 1) % len(ids)]
+                            elif self.next_room_rect.collidepoint(event.pos):
+                                srv.selected_room_id = ids[(index + 1) % len(ids)]
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     srv.running = False
 
@@ -1205,7 +627,7 @@ class ServerUI:
                   (34 + width + 10, 54), self.f_head, ACCENT)
         self._draw_reset_button()
 
-        self._draw_modes()
+        self._draw_rooms()
         self._draw_clients(pygame.Rect(32, 146, 400, 288))
         self._draw_match(pygame.Rect(452, 146, 456, 288))
         self._draw_board(pygame.Rect(452, 450, 456, 246))
@@ -1213,31 +635,18 @@ class ServerUI:
 
         pygame.display.flip()
 
-    def _mode_rects(self):
-        """One button per mode, laid out left to right under the title."""
-        rects = []
-        x, width = 32, 116
-        for mode in game_rules.MODES:
-            rects.append((mode, pygame.Rect(x, 100, width, 34)))
-            x += width + 8
-        return rects
-
-    def _draw_modes(self):
+    def _draw_rooms(self):
         mouse = pygame.mouse.get_pos()
-        current = self.server.game.mode
-        for mode, box in self.mode_rects:
-            active = mode == current
-            hot = box.collidepoint(mouse)
-            fill = (37, 99, 235) if active else (PANEL_2 if hot else PANEL)
+        for label, box in (("Previous", self.previous_room_rect), ("Next", self.next_room_rect)):
+            fill = PANEL_2 if box.collidepoint(mouse) else PANEL
             pygame.draw.rect(self.screen, fill, box, border_radius=8)
-            pygame.draw.rect(self.screen, ACCENT if active else LINE, box,
-                             width=1, border_radius=8)
-            label = game_rules.MODE_LABELS.get(mode, mode)
-            self.text(label, box.center, self.f_body,
-                      (235, 244, 255) if active else MUTED, center=True)
-        # the description sits under the Reset button, clear of the buttons
-        blurb = game_rules.MODE_BLURBS.get(current, "")
-        self.text(blurb, (WIN_W - 32, 74), self.f_small, MUTED, right=True)
+            self.text(label, box.center, self.f_body, TEXT, center=True)
+        room = self.server.selected_room
+        if room:
+            label = "%s - %s" % (room.name, game_rules.MODE_LABELS[room.mode])
+        else:
+            label = "No rooms - players create rooms from the lobby"
+        self.text(self.fit(label, self.f_body, 430), (150, 108), self.f_body, ACCENT)
 
     def _draw_reset_button(self):
         colour = (185, 60, 60) if self.reset_hover else (150, 48, 48)
@@ -1248,7 +657,12 @@ class ServerUI:
         self.screen.blit(label, label.get_rect(center=self.reset_rect.center))
 
     def _draw_clients(self, rect):
-        srv = self.server
+        srv = self.server.selected_room
+        if srv is None:
+            self.panel(rect, "LOBBY")
+            self.text("%d connected" % len(self.server._joined_clients()),
+                      (rect.x + 16, rect.y + 52), self.f_body, MUTED)
+            return
         humans = srv._joined_clients()
         online = len([c for c in humans if c.alive])
         self.panel(rect, "CONNECTED CLIENTS")
@@ -1305,7 +719,10 @@ class ServerUI:
                       self.f_small, MUTED)
 
     def _draw_match(self, rect):
-        srv = self.server
+        srv = self.server.selected_room
+        if srv is None:
+            self.panel(rect, "MATCH")
+            return
         g = srv.game
         self.panel(rect, "MATCH")
 
@@ -1379,7 +796,11 @@ class ServerUI:
 
     def _draw_board(self, rect):
         """Admin view of the board - the only place unfound bombs are shown."""
-        g = self.server.game
+        room = self.server.selected_room
+        if room is None:
+            self.panel(rect, "BOARD")
+            return
+        g = room.game
         self.panel(rect, "BOARD  (server view)")
         view = g.board_view(reveal_all=True)
         box = pygame.Rect(rect.x + 16, rect.y + 44, rect.width - 32,

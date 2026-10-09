@@ -10,6 +10,7 @@ import json
 import os
 import queue
 import threading
+import time
 
 import config
 
@@ -336,9 +337,9 @@ class DatabaseLeaderboard(Leaderboard):
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
 
-    def submit(self, snapshot):
+    def submit(self, snapshot, context=None):
         # TODO: Add a durable result journal if recovery before commit is required.
-        self.jobs.put(snapshot)
+        self.jobs.put((snapshot, context))
 
     def _run(self):
         import psycopg
@@ -347,25 +348,38 @@ class DatabaseLeaderboard(Leaderboard):
                      psycopg.errors.DeadlockDetected,
                      psycopg.errors.LockNotAvailable,
                      psycopg.errors.QueryCanceled)
+        retries = []
+        closing = False
         while not self.stopping.is_set():
-            snapshot = self.jobs.get()
-            if snapshot is None:
+            if closing and not retries and self.jobs.empty():
                 return
-            while not self.stopping.is_set():
+            due = min(retries, key=lambda item: item[0]) if retries else None
+            if due is not None and due[0] <= time.monotonic():
+                retries.remove(due)
+                _, snapshot, context = due
+            else:
+                timeout = max(0, due[0] - time.monotonic()) if due else None
                 try:
-                    data, changes = self.store.record_match(snapshot)
-                except Exception as exc:
-                    self.completed.put((None, None, type(exc).__name__))
-                    if not isinstance(exc, retryable):
-                        self.stopping.wait()
-                        return
-                    if self.stopping.wait(3):
-                        return
-                else:
-                    self.completed.put((data, changes, None))
-                    break
+                    job = self.jobs.get(timeout=timeout)
+                except queue.Empty:
+                    continue
+                if job is None:
+                    closing = True
+                    continue
+                snapshot, context = job
+            try:
+                data, changes = self.store.record_match(snapshot)
+            except Exception as exc:
+                self.completed.put((context, None, None, type(exc).__name__))
+                if isinstance(exc, retryable):
+                    retries.append((time.monotonic() + 3, snapshot, context))
+            else:
+                self.completed.put((context, data, changes, None))
 
     def close(self):
-        self.stopping.set()
         self.jobs.put(None)
         self.worker.join(timeout=10)
+        if self.worker.is_alive():
+            self.stopping.set()
+            self.jobs.put(None)
+            self.worker.join(timeout=6)

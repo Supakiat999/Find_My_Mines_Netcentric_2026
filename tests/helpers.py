@@ -23,6 +23,8 @@ import config                                    # noqa: E402
 config.STATS_FILE = None
 config.PREFS_FILE = None
 config.DATABASE_URL = None
+config.SERVER_HOST = "127.0.0.1"
+config.BIND_HOST = "127.0.0.1"
 
 import protocol                                  # noqa: E402
 
@@ -91,7 +93,7 @@ class ServerRunner:
 
     @property
     def game(self):
-        return self.srv.game
+        return self.srv.selected_room.game
 
 
 class Wire:
@@ -116,11 +118,24 @@ class Wire:
 
     def join(self, nickname, token=None, vs=None):
         extra = {"token": token} if token else {}
-        if vs:
-            extra["vs"] = vs
         protocol.send(self.sock, protocol.JOIN, nickname=nickname, **extra)
+        welcome = wait(lambda: self.get(protocol.WELCOME), "test client identity")
+        if welcome.get("room_id") is not None:
+            return
+        rooms = wait(lambda: self.get(protocol.ROOMS), "test room list")["rooms"]
+        self.forget(protocol.WELCOME)
+        if rooms:
+            protocol.send(self.sock, protocol.JOIN_ROOM, room_id=rooms[0]["id"],
+                          watch=not rooms[0]["joinable"])
+        else:
+            protocol.send(self.sock, protocol.CREATE_ROOM, name="Test room", mode="classic",
+                          custom={}, bot_level=vs or "off", ranked=True)
+        wait(lambda: self.get(protocol.WELCOME), "explicit test room membership")
 
     def send(self, msg_type, **payload):
+        if msg_type in (protocol.PICK, protocol.FLAG, protocol.REMATCH, protocol.CHAT, protocol.HINT):
+            welcome = self.get(protocol.WELCOME) or {}
+            payload.setdefault("room_id", welcome.get("room_id"))
         protocol.send(self.sock, msg_type, **payload)
 
     def get(self, msg_type):
