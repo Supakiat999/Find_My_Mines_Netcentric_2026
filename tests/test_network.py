@@ -12,7 +12,7 @@ import game as g
 import protocol
 
 run = ServerRunner(55601)
-srv, game = run.srv, run.game
+srv, game = run.srv, None
 PORT = 55601
 
 
@@ -27,8 +27,28 @@ def pick(wire, cell):
         wire.send(protocol.PICK, row=cell[0], col=cell[1])
 
 
+def recreate(wires, mode="classic", custom=None, bot="off", ranked=True):
+    global game
+    for wire in wires:
+        wire.send(protocol.LEAVE_ROOM)
+    wait(lambda: all((w.get(protocol.WELCOME) or {}).get("role") == "lobby"
+                     for w in wires), "clients back in lobby")
+    wires[0].forget(protocol.WELCOME)
+    wires[0].send(protocol.CREATE_ROOM, name="Test room", mode=mode,
+                   custom=custom or {}, bot_level=bot, ranked=ranked)
+    room_id = wait(lambda: (wires[0].get(protocol.WELCOME) or {}).get("room_id"),
+                   "configured room")
+    for wire in wires[1:]:
+        wire.forget(protocol.WELCOME)
+        wire.send(protocol.JOIN_ROOM, room_id=room_id, watch=False)
+    wait(lambda: all((w.get(protocol.WELCOME) or {}).get("room_id") == room_id
+                     for w in wires), "clients rejoined configured room")
+    game = srv.rooms[room_id].game
+
+
 # --- 1. join, welcome, client list -------------------------------------
 alice, bob = Wire(PORT, "Alice"), Wire(PORT, "Bob")
+game = srv.selected_room.game
 w = wait(lambda: alice.get(protocol.WELCOME), "Alice welcome")
 assert w["message"] == "Welcome, Alice." and w["role"] == "player"
 assert w["grid_size"] == 6 and w["bombs_total"] == 11 and w["token"]
@@ -116,8 +136,14 @@ alice.close()
 wait(lambda: (carol.get(protocol.CLIENTS) or {}).get("count") == 2, "2 online")
 listing = carol.get(protocol.CLIENTS)["list"]
 assert any(c["name"] == "Alice" and c["away"] for c in listing), listing
-wait(lambda: w3["client_id"] in game.players, "Carol promoted after the grace")
-ok(8, "a spectator watches; a leaver is marked away, then replaced after the grace")
+# Watching is explicit; wait for the held seat to expire, then join it.
+wait(lambda: alice.get(protocol.WELCOME)["client_id"] not in game.players,
+     "away seat released")
+carol.send(protocol.LEAVE_ROOM)
+wait(lambda: (carol.get(protocol.WELCOME) or {}).get("role") == "lobby", "Carol lobby")
+carol.send(protocol.JOIN_ROOM, room_id=alice.get(protocol.WELCOME).get("room_id"))
+wait(lambda: w3["client_id"] in game.players, "Carol joins vacant seat")
+ok(8, "a spectator watches; a leaver is marked away; an opted-in watcher takes vacancy")
 bob.close(); carol.close()
 time.sleep(1.4)
 
@@ -151,9 +177,11 @@ by_id = {dave.get(protocol.WELCOME)["client_id"]: dave,
 
 
 def switch(mode):
+    dave.forget(protocol.ERROR)
     dave.send(protocol.SET_MODE, mode=mode)
-    wait(lambda: game.mode == mode and game.phase == g.PHASE_PLAYING,
-         "mode " + mode)
+    assert "fixed" in wait(lambda: dave.get(protocol.ERROR), "fixed room settings")["message"]
+    recreate((dave, erin), mode=mode)
+    wait(lambda: game.mode == mode and game.phase == g.PHASE_PLAYING, "mode " + mode)
 
 
 switch(g.MODE_RADIUS2)
@@ -201,21 +229,21 @@ wait(lambda: spot not in game.flags, "the flag to lift")
 ok(12, "minesweeper over the wire: a bomb ends the turn; flags plant and lift")
 
 switch(g.MODE_CUSTOM)
-dave.send(protocol.SET_CUSTOM, settings={"size": 7, "bombs": 12,
-                                         "turn_seconds": 20})
+recreate((dave, erin), mode=g.MODE_CUSTOM,
+         custom={"size": 7, "bombs": 12, "turn_seconds": 20})
 wait(lambda: game.custom["size"] == 7 and game.dims == (7, 7), "custom size")
 assert len(game.bombs) == 12 and game.turn_seconds == 20
+dave.forget(protocol.ERROR)
 dave.send(protocol.SET_CUSTOM, settings={"size": 500, "bombs": 99999})
-time.sleep(0.5)
-assert game.custom["size"] <= config.CUSTOM_LIMITS["size_flat"][1]
-assert game.bomb_count < game.cell_count
+assert "fixed" in wait(lambda: dave.get(protocol.ERROR), "custom settings immutable")["message"]
+assert game.custom["size"] == 7 and game.bomb_count < game.cell_count
 frank = Wire(PORT, "Frank")
 wait(lambda: frank.get(protocol.WELCOME), "spectator")
 before = dict(game.custom)
 frank.send(protocol.SET_CUSTOM, settings={"size": 4})
 time.sleep(0.4)
 assert game.custom == before
-ok(13, "custom over the wire: applied, clamped, and refused for spectators")
+ok(13, "custom settings apply at room creation and cannot change in-room")
 
 run.stop()
 print("\nALL NETWORK CHECKS PASSED")

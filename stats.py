@@ -8,6 +8,9 @@ real file).
 
 import json
 import os
+import queue
+import threading
+import time
 
 import config
 
@@ -94,6 +97,10 @@ class Leaderboard:
                 raw = json.load(handle)
         except (OSError, ValueError):
             return
+        self.load_records(raw)
+
+    def load_records(self, raw):
+        """Normalize current and legacy JSON records without reopening a file."""
         if not isinstance(raw, dict):
             return
         for name, row in raw.items():
@@ -314,3 +321,65 @@ class Leaderboard:
                 "mode": mode,
             })
         return out
+
+
+class DatabaseLeaderboard(Leaderboard):
+    """Cached reads on the game thread; transactional writes on one worker."""
+
+    def __init__(self, url):
+        from database import Store
+        self.path = None
+        self.store = Store(url)
+        self.data = self.store.load()
+        self.jobs = queue.Queue()
+        self.completed = queue.Queue()
+        self.stopping = threading.Event()
+        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.worker.start()
+
+    def submit(self, snapshot, context=None):
+        # TODO: Add a durable result journal if recovery before commit is required.
+        self.jobs.put((snapshot, context))
+
+    def _run(self):
+        import psycopg
+        retryable = (psycopg.OperationalError, psycopg.InterfaceError,
+                     psycopg.errors.SerializationFailure,
+                     psycopg.errors.DeadlockDetected,
+                     psycopg.errors.LockNotAvailable,
+                     psycopg.errors.QueryCanceled)
+        retries = []
+        closing = False
+        while not self.stopping.is_set():
+            if closing and not retries and self.jobs.empty():
+                return
+            due = min(retries, key=lambda item: item[0]) if retries else None
+            if due is not None and due[0] <= time.monotonic():
+                retries.remove(due)
+                _, snapshot, context = due
+            else:
+                timeout = max(0, due[0] - time.monotonic()) if due else None
+                try:
+                    job = self.jobs.get(timeout=timeout)
+                except queue.Empty:
+                    continue
+                if job is None:
+                    closing = True
+                    continue
+                snapshot, context = job
+            try:
+                data, changes = self.store.record_match(snapshot)
+            except Exception as exc:
+                self.completed.put((context, None, None, type(exc).__name__))
+                if isinstance(exc, retryable):
+                    retries.append((time.monotonic() + 3, snapshot, context))
+            else:
+                self.completed.put((context, data, changes, None))
+
+    def close(self):
+        self.jobs.put(None)
+        self.worker.join(timeout=10)
+        if self.worker.is_alive():
+            self.stopping.set()
+            self.jobs.put(None)
+            self.worker.join(timeout=6)

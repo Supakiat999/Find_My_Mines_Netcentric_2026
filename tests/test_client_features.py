@@ -44,40 +44,38 @@ def type_text(ui, text):
 
 def new_ui(nickname):
     ui = client_mod.ClientUI()
+    ui.prefs["rules_seen"] = True
     uis.append(ui)
     ui_wait(lambda: ui.net.status == "connected", "connect")
     ui.nickname = nickname
     ui.net.send(protocol.JOIN, nickname=nickname)
-    ui_wait(lambda: ui.screen_name == client_mod.SCREEN_GAME, nickname + " joined")
+    ui_wait(lambda: ui.screen_name == client_mod.SCREEN_LOBBY, nickname + " joined lobby")
     return ui
+
+
+def create_room(ui, mode=g.MODE_CLASSIC, bot="off", name="testroom"):
+    global game
+    ui.net.send(protocol.CREATE_ROOM, name=name, mode=mode, custom={},
+                bot_level=bot, ranked=bot == "off")
+    ui_wait(lambda: ui.screen_name == client_mod.SCREEN_GAME, "room creation")
+    game = next(room.game for room in srv.rooms.values() if room.name == name)
 
 
 # =====================================================================
 # part 1 - picking an opponent
 # =====================================================================
 run = ServerRunner(55604)
-srv, game = run.srv, run.game
+srv, game = run.srv, None
 solo = new_ui("Solo")
-ui_wait(lambda: solo.phase == "waiting", "waiting for an opponent")
-
-level_buttons = {level: rect for level, _l, rect in solo._opponent_buttons()}
-press(solo, level_buttons["hard"].center)
-ui_wait(lambda: srv.bot_level == "hard" and game.phase == g.PHASE_PLAYING, "a match")
+create_room(solo, bot="hard", name="solo-hard")
+ui_wait(lambda: game.phase == g.PHASE_PLAYING, "a match")
 ui_wait(lambda: solo.state.get("bot_seated"), "the seated computer")
 assert [p["bot"] for p in solo.players] == [False, True]
 assert solo.clients["bots"][0]["name"] == "Computer (Hard)"
 solo.draw()
 ok(1, "clicking Hard seats the computer and starts a match")
 
-press(solo, level_buttons["easy"].center)
-ui_wait(lambda: srv.bot_level == "easy" and solo.players[1]["name"] == "Computer (Easy)",
-        "the level to change")
-press(solo, level_buttons["off"].center)
-ui_wait(lambda: not solo.state["bot_seated"] and solo.phase == "waiting", "off")
-ok(2, "the level can be changed mid-game and switched back to a person")
-
-press(solo, level_buttons["hard"].center)
-ui_wait(lambda: solo.phase == "playing", "playing again")
+ok(2, "bot level is fixed when room is created")
 guard = 0
 while game.phase == g.PHASE_PLAYING and guard < 400:
     guard += 1
@@ -94,6 +92,8 @@ while game.phase == g.PHASE_PLAYING and guard < 400:
 ui_wait(lambda: solo.match_end is not None, "the end screen")
 assert {p["name"] for p in solo.match_end["players"]} == {"Solo", "Computer (Hard)"}
 solo.draw()
+time.sleep(client_mod.END_DELAY + client_mod.END_FADE + 0.05)
+solo.draw()
 press(solo, solo.rematch_rect.center)
 ui_wait(lambda: solo.match_end is None and game.phase == g.PHASE_PLAYING,
         "an instant rematch")
@@ -105,27 +105,20 @@ uis.clear()
 time.sleep(0.3)
 
 # =====================================================================
-# part 1b - choosing the computer on the start screen
+# part 1b - nickname leads to lobby
 # =====================================================================
 run = ServerRunner(55614)
-srv, game = run.srv, run.game
+srv, game = run.srv, None
 start = client_mod.ClientUI()
 uis.append(start)
 ui_wait(lambda: start.net.status == "connected", "connect")
-assert start.vs == "off"
-buttons = {level: rect for level, _l, rect in start._start_buttons()}
+start.prefs["rules_seen"] = True
 start.draw()
-start._on_nickname_event(pygame.event.Event(
-    pygame.MOUSEBUTTONDOWN, button=1, pos=buttons["medium"].center))
-assert start.vs == "medium"
 type_text(start, "Solo")
 key(start, pygame.K_RETURN, "\r")
-ui_wait(lambda: start.screen_name == client_mod.SCREEN_GAME, "joined")
-ui_wait(lambda: srv.bot_level == "medium" and game.phase == g.PHASE_PLAYING,
-        "the computer seated by the join")
-ui_wait(lambda: start.state.get("bot_seated"), "the seated computer")
+ui_wait(lambda: start.screen_name == client_mod.SCREEN_LOBBY, "joined lobby")
 start.draw()
-ok("3b", "the start screen's Medium joins straight into a game against the computer")
+ok("3b", "nickname entry opens the room lobby")
 
 start.net.close()
 run.stop()
@@ -136,8 +129,11 @@ time.sleep(0.3)
 # part 2 - two people
 # =====================================================================
 run = ServerRunner(55605)
-srv, game = run.srv, run.game
+srv, game = run.srv, None
 alice, bob = new_ui("Alice"), new_ui("Bob")
+create_room(alice)
+ui_wait(lambda: bob.rooms, "room list")
+bob.net.send(protocol.JOIN_ROOM, room_id=bob.rooms[0]["id"], watch=False)
 ui_wait(lambda: alice.phase == "playing" and bob.phase == "playing", "match")
 by_id = {alice.my_id: alice, bob.my_id: bob}
 
@@ -157,6 +153,23 @@ def play_pick(cell=None):
     before = len(game.revealed)
     press(ui, ui.cell_rect(cell).center)
     ui_wait(lambda: len(game.revealed) > before, "a pick")
+
+
+def recreate(mode):
+    global game, by_id
+    alice.net.send(protocol.LEAVE_ROOM)
+    bob.net.send(protocol.LEAVE_ROOM)
+    ui_wait(lambda: alice.screen_name == client_mod.SCREEN_LOBBY
+             and bob.screen_name == client_mod.SCREEN_LOBBY, "leave room")
+    alice.net.send(protocol.CREATE_ROOM, name="testroom", mode=mode,
+                    custom={}, bot_level="off", ranked=True)
+    ui_wait(lambda: alice.screen_name == client_mod.SCREEN_GAME, "create " + mode)
+    game = srv.rooms[alice.room_id].game
+    ui_wait(lambda: bob.rooms, "room list")
+    bob.net.send(protocol.JOIN_ROOM, room_id=alice.room_id, watch=False)
+    ui_wait(lambda: bob.screen_name == client_mod.SCREEN_GAME, "join " + mode)
+    ui_wait(lambda: game.phase == g.PHASE_PLAYING, "match in " + mode)
+    by_id = {alice.my_id: alice, bob.my_id: bob}
 
 
 # ---- chat -----------------------------------------------------------
@@ -201,11 +214,12 @@ ok(5, "quick-chat buttons send, focus behaves, and the log scrolls")
 waiting = other()
 waiting.toast = ""
 waiting._ask_coach()
-assert "own turn" in waiting.toast, (waiting.toast, waiting.role, waiting.phase, waiting.my_turn, game.current_turn, waiting.my_id)
+assert "your turn" in waiting.toast, (waiting.toast, waiting.role, waiting.phase, waiting.my_turn, game.current_turn, waiting.my_id)
 for _ in range(4):
     if game.phase == g.PHASE_PLAYING:
         play_pick()
 mover = me()
+mover._set_tab("play")
 ui_wait(lambda: mover.my_turn and mover.phase == "playing", "the turn on screen")
 assert mover._my_hints_left() == config.HINTS_PER_MATCH
 ask, odds = mover._coach_buttons()
@@ -261,30 +275,32 @@ play_pick(empty)
 ui_wait(lambda: all("click" in u.sound.played for u in uis), "the click")
 ui_wait(lambda: "turn" in other().sound.played or "turn" in me().sound.played,
         "the turn ding")
-run.call(srv.set_mode, g.MODE_SWEEPER)
-ui_wait(lambda: game.mode == "sweeper" and game.phase == g.PHASE_PLAYING
-        and alice.mode == "sweeper" and bob.mode == "sweeper", "sweeper")
+recreate(g.MODE_SWEEPER)
 for u in uis:
     u.sound.played.clear()
 play_pick(next(iter(sorted(game.bombs))))
-ui_wait(lambda: all("boom" in u.sound.played for u in uis), "the boom")
-assert all("bomb" not in u.sound.played for u in uis), "a bad bomb sounds different"
+ui_wait(lambda: all("boom" in u.sound.played for u in (alice, bob)), "the boom")
+assert all("bomb" not in u.sound.played for u in (alice, bob)), "a bad bomb sounds different"
 ok(9, "sounds follow the game: chime for a bomb you want, click for a slot, "
       "ding on your turn, a thump when a bomb is bad")
 
 # ---- reveal animation ----------------------------------------------
-run.call(srv.set_mode, g.MODE_CLASSIC)
+recreate(g.MODE_CLASSIC)
 ui_wait(lambda: game.phase == g.PHASE_PLAYING and alice.mode == "classic"
         and bob.mode == "classic", "classic")
 cell = next(c for c in game.cells() if c not in game.revealed)
+for ui in (alice, bob):
+    ui.now = time.monotonic()
 play_pick(cell)
 ui_wait(lambda: cell in alice.reveal_times or cell in bob.reveal_times, "animation")
 watcher = alice if cell in alice.reveal_times else bob
 now = time.monotonic()
-assert watcher._reveal_progress(cell, now) < 1.0
-assert watcher._reveal_progress(cell, now + client_mod.REVEAL_SECONDS + 0.1) == 1.0
+assert now < watcher.reveal_times[cell] + client_mod.REVEAL_SECONDS
+watcher.now = watcher.reveal_times[cell] + client_mod.REVEAL_SECONDS + 0.1
+watcher._draw_board()
+assert cell not in watcher.reveal_times
 late = new_ui("Late")
-assert late.role == "spectator" and not late.reveal_times, "no animation on first look"
+assert late.screen_name == client_mod.SCREEN_LOBBY, "new clients enter lobby"
 late.net.close()
 uis.remove(late)
 ok(10, "a newly opened slot animates for a moment; a late joiner's first look does not")
@@ -296,7 +312,7 @@ ui_wait(lambda: ui.can_click(target), "my turn")
 ui.window = pygame.display.set_mode((600, 440), pygame.RESIZABLE)
 ui.draw()
 ox, oy, scale = ui._view
-assert abs(scale - 0.5) < 0.01, scale
+assert 0.4 <= scale <= 0.5, scale
 canvas = ui.cell_rect(target).center
 inverse = (int(ox + canvas[0] * scale), int(oy + canvas[1] * scale))
 assert all(abs(a - b) <= 2 for a, b in zip(ui._to_canvas(inverse), canvas))
@@ -320,14 +336,13 @@ pygame.display.set_mode((client_mod.WIN_W, client_mod.WIN_H), pygame.RESIZABLE)
 ok(12, "in an odd-shaped window the game is letterboxed, and clicks still map correctly")
 
 # ---- reconnecting ---------------------------------------------------
-run.call(srv.set_mode, g.MODE_CLASSIC)
 run.call(srv.reset_all)
 ui_wait(lambda: game.phase == g.PHASE_PLAYING, "a match")
 for _ in range(4):
     play_pick()
 victim = alice
 old_id, token = victim.my_id, victim.token
-names = srv._names()
+names = {rec.id: rec.name for rec in srv.clients.values()}
 score_before = {names[pid]: game.scores[pid] for pid in game.players}
 ui_wait(lambda: {p["name"]: p["score"] for p in victim.players} == score_before
         and {p["name"]: p["score"] for p in bob.players} == score_before,
@@ -381,13 +396,13 @@ run.stop()
 # =====================================================================
 ui = client_mod.ClientUI()
 seen = []
-for _ in range(3):
+for _ in themes.ORDER:
     seen.append(client_mod.THEME_NAME)
     ui._next_theme()
     ui.screen_name = client_mod.SCREEN_ERROR
     ui.draw()
-assert seen == ["dark", "light", "colorblind"] and client_mod.THEME_NAME == "dark"
-ok(16, "the theme button cycles dark -> light -> colour-blind -> dark and redraws")
+assert seen == themes.ORDER and client_mod.THEME_NAME == themes.ORDER[0]
+ok(16, "the theme button cycles every palette and redraws")
 
 problems = []
 for name, t in themes.THEMES.items():

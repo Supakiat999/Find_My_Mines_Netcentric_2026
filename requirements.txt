@@ -1,4 +1,5 @@
 # Find My Mines - install with:  pip install -r requirements.txt
-# Everything else (socket, threading, json, queue) is in the Python standard
-# library, so pygame is the only third-party package.
+# Networking uses the standard library; Psycopg enables PostgreSQL persistence.
 pygame>=2.0
+psycopg[binary]>=3.1,<4
+python-dotenv>=1.0,<2

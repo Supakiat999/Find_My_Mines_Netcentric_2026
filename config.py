@@ -5,9 +5,19 @@ here.  When you run the client on a second computer, the only line you need
 to change is SERVER_HOST.
 """
 
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+# PostgreSQL is opt-in; an empty DATABASE_URL preserves JSON persistence.
+DATABASE_URL = os.environ.get("DATABASE_URL") or None
+
 # --- Network -----------------------------------------------------------
 # Address the client dials.  Use "127.0.0.1" when the server runs on the
 # same computer, or the LAN IP of the server machine (e.g. "192.168.1.42").
+# SERVER_HOST = "172.20.10.2"
 SERVER_HOST = "127.0.0.1"
 
 # Address the server binds to.  "0.0.0.0" accepts connections from any

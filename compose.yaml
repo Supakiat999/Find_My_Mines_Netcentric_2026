@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: find_my_mines
+      POSTGRES_USER: mines_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      RUNTIME_PASSWORD: ${RUNTIME_PASSWORD:?Set RUNTIME_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mines_admin -d find_my_mines"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  adminer:
+    image: adminer:5
+    ports:
+      - "127.0.0.1:8181:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  postgres_data:

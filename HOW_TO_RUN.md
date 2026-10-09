@@ -193,7 +193,14 @@ hotspot is the reliable fallback for the demo, so set one up in advance.
 
 ## Playing
 
-- Whoever joins first is player 1; the second is player 2. The match starts
+1. Enter a nickname to reach the **Room List**.
+2. Choose **Create Room**, then enter its name, mode, custom settings, opponent,
+   and Ranked/Casual choice. Create joins the new room automatically.
+3. Other players choose **Join** for a vacant seat or **Watch** to spectate.
+4. Use **Leave Room** to return to the lobby. Settings cannot change in an existing
+   room; create another room for different rules.
+
+- The creator takes the first seat; a second human takes the other. The match starts
   automatically and the **server picks who goes first at random**.
 - You get **10 seconds** per turn. The countdown is at the top.
 - Click a covered slot. A **bomb** scores 1 point and you keep your turn; an
@@ -203,14 +210,16 @@ hotspot is the reliable fallback for the demo, so set one up in advance.
   **YOU LOST** with the scores, and a **REMATCH** button.
 - A rematch starts when **both** players click it; the previous winner goes
   first.
-- A third person can connect and watch — they appear in the ONLINE list at the
-  bottom and follow the board, but cannot click.
+- Spectators appear in the room's ONLINE list and follow its board without clicking.
+  Watching does not automatically enroll someone as a player when a seat opens.
+- Multiple rooms run simultaneously. Chat, clocks, hints, boards, rematches, and
+  reconnect pauses stay inside their room. Leaving an active match interrupts it
+  without recording a forfeit or changing Elo.
 
 ## The extras (KK Plus)
 
-- **Play alone:** in the OPPONENT card on the right, pick Easy, Medium or Hard.
-  Pick Player to wait for a friend instead. It only works while one person is
-  connected.
+- **Play alone:** choose Easy, Medium, or Hard while creating a room. Its second
+  seat stays reserved for the computer. Other visitors can watch.
 - **AI coach:** on your turn press **Ask the coach** (or **H**). The best slot is
   outlined and every covered slot shows its odds. You get three questions per
   match; **Odds** turns the tint on and off.
@@ -241,4 +250,135 @@ accuracy check. To run just one part: `python tests/run_all.py ai`.
 - **BOARD (server view)** — the only screen showing bombs nobody has found yet
 - **RESET GAME** — clears the board *and* both scores, then deals a new match
 
+Use **Previous** and **Next** to select a room. Reset affects only that selected
+room. Room settings are chosen by players during creation, not on the admin console.
+
 Close the server window (or press Esc) to shut everything down.
+
+## PostgreSQL persistence (optional)
+
+The server uses PostgreSQL when `DATABASE_URL` is set. Otherwise it keeps using
+`stats.json`. Clients never connect to the database and need no database credentials.
+
+Install Docker with Compose, then run from the project root:
+
+```bash
+cp .env.example .env
+# Replace both password placeholders with different random hex passwords.
+docker compose up -d --wait
+pip install -r requirements.txt
+python server.py
+```
+
+Python loads the project-root `.env` automatically using `python-dotenv`, including
+`${RUNTIME_PASSWORD}` expansion. Existing environment variables take precedence.
+This works from any working directory and also applies to seed and migration scripts.
+Keep passwords and `.env` out of Git.
+
+PostgreSQL 17 binds only to `127.0.0.1:5432`. The `runtime` role can read and
+record results but cannot create, alter, or delete tables. The `mines_admin` role
+is for setup, migration, and backups. The database is named `find_my_mines`.
+
+Adminer runs at http://127.0.0.1:8181. Select **PostgreSQL**, server `postgres`,
+database `find_my_mines`, and username `mines_admin` with `POSTGRES_PASSWORD`
+from `.env`. Use `runtime` with `RUNTIME_PASSWORD` for restricted access instead.
+Adminer binds only to localhost; credentials are entered at login, not stored in its configuration.
+
+Completed matches, both participants (including bots), player totals, and per-mode
+ratings are stored. Boards, chat, and reconnect tokens remain in memory. Nicknames
+remain case-sensitive identities, not authenticated accounts.
+
+### Import existing stats and roll back
+
+Stop the game server before migration. Back up `stats.json`, then use the owner URL:
+
+```bash
+cp stats.json stats.backup.json
+set -a; . ./.env; set +a
+DATABASE_URL="postgresql://mines_admin:${POSTGRES_PASSWORD}@127.0.0.1:5432/find_my_mines" \
+  python tools/migrate_stats.py import stats.json
+```
+
+Import preserves normalized totals, streaks, Elo, peaks, and placement counts.
+Repeating the same import is safe before any matches have been recorded. Different
+existing records or any completed database match cause import to fail. Historical
+match rows cannot be reconstructed from aggregate JSON and are not invented.
+
+For rollback after playing database-backed matches, stop the server and export:
+
+```bash
+python tools/migrate_stats.py export stats.export.json
+```
+
+Export refuses to overwrite a file without `--force`. Back up the current JSON,
+replace it with the export, set `DATABASE_URL=` in `.env` or the environment, and
+restart the server. There is
+no automatic JSON fallback or dual writing when PostgreSQL is configured.
+
+### Mock data
+
+Stop the game server, configure `DATABASE_URL` in `.env`, then run:
+
+```bash
+python seed/seed.py
+```
+
+This adds four `Mock_` players and eleven completed matches across all five modes,
+including ranked, casual, and computer-opponent examples. It uses the real game
+rules and database recording logic, so totals, Elo, and participant statistics agree.
+Fixed match UUIDs make reruns safe, including after a partial failure. Existing
+non-mock player records are unchanged; no records are deleted. Use this only in a
+development database. Restart the server afterward to refresh its leaderboard cache.
+
+### Lifecycle and failures
+
+```bash
+docker compose ps
+docker compose logs postgres
+docker compose restart postgres
+docker compose stop
+docker compose up -d --wait
+```
+
+The named volume preserves records through container restarts and recreation.
+**`docker compose down -v` deletes database storage. Do not use it to apply schema changes.**
+Initialization files in `db/` run only for an empty volume. Apply future schema
+changes explicitly after backing up; changing initialization SQL does not migrate
+an existing database. Changing `.env` passwords also does not rotate existing roles.
+
+Backup and restore use the owner role, not runtime:
+
+```bash
+docker compose exec -T postgres pg_dump -U mines_admin -d find_my_mines > mines.backup.sql
+# Restore only into a newly created database with no game tables; stop the server first.
+docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U mines_admin -d find_my_mines < mines.backup.sql
+```
+
+The restore example assumes `find_my_mines` has no tables. An initialized Docker
+database already has tables; restore into a separate empty database instead of
+running this against live records.
+
+If startup cannot reach PostgreSQL, the server fails rather than showing empty stats.
+During play, database writes run on one worker. Reads use the server's cache.
+A completed match waits for commit before final Elo is announced. Transient failures
+retry with the same match UUID. Only the originating room waits for rematches and
+resets; other rooms keep playing. Chat and networking stay responsive. Permanent
+errors require operator intervention and do not stop unrelated result jobs.
+
+Pending results live only in memory. A crash before commit can lose the result;
+keep the server running until saving completes. Shutdown warns when a result is pending.
+The cache targets one game server; sharing players across servers requires cache refresh.
+
+### Database checks
+
+The database suites create and remove uniquely named temporary schemas. They do not
+modify live game tables. Use a test database owner URL, never the restricted runtime URL:
+
+```bash
+set -a; . ./.env; set +a
+TEST_DATABASE_URL="postgresql://mines_admin:${POSTGRES_PASSWORD}@127.0.0.1:5432/find_my_mines" \
+  python tests/run_all.py database
+```
+
+Without `TEST_DATABASE_URL`, these suites skip. Other suites keep using in-memory
+stats even when `DATABASE_URL` is exported.

@@ -7,3 +7,7 @@ client_prefs.json
 
 # virtual environment
 .venv/
+.env
+*.backup.json
+*.export.json
+*.backup.sql

@@ -55,6 +55,8 @@ CX = GAME_W // 2                  # centre of the board column
 FPS = 60
 
 SCREEN_NICKNAME = "nickname"
+SCREEN_LOBBY = "lobby"
+SCREEN_CREATE_ROOM = "create_room"
 SCREEN_GAME = "game"
 SCREEN_ERROR = "error"
 
@@ -355,6 +357,15 @@ class ClientUI:
         self.screen_name = SCREEN_NICKNAME
         self.nickname = ""
         self.vs = "off"                      # chosen on the start screen
+        self.room_id = None
+        self.rooms = []
+        self.room_scroll = 0
+        self.room_name = "Room"
+        self.create_mode = config.DEFAULT_MODE
+        self.create_custom = dict(config.DEFAULT_CUSTOM)
+        self.create_bot = "off"
+        self.create_ranked = True
+        self.room_error = ""
         self.my_id = None
         self.role = None
         self.token = None                    # proves who we are on reconnect
@@ -419,6 +430,7 @@ class ClientUI:
         self.sound_rect = pygame.Rect(self.ranked_rect.x - 8 - 96, 14, 96, 32)
         self.rules_rect = pygame.Rect(self.sound_rect.x - 8 - 84, 14, 84, 32)
         self.rules_close = pygame.Rect(0, 0, 160, 44)
+        self.leave_rect = pygame.Rect(24, 56, 90, 32)
 
     # ------------------------------------------------------------------
     # small helpers
@@ -703,7 +715,7 @@ class ClientUI:
     def _maintain_connection(self):
         """If the link drops mid-game, keep trying to get back to the seat."""
         now = time.time()
-        if self.screen_name != SCREEN_GAME or not self.joined:
+        if self.screen_name not in (SCREEN_GAME, SCREEN_LOBBY, SCREEN_CREATE_ROOM) or not self.joined:
             return
         if self.net.status in ("lost", "failed"):
             if self.reconnect_until is None:
@@ -744,22 +756,46 @@ class ClientUI:
 
     def _handle(self, msg):
         kind = msg.get("type")
+        if kind == protocol.ROOMS:
+            self.rooms = msg.get("rooms", [])
+            self.room_scroll = min(self.room_scroll, max(0, len(self.rooms) - 1))
+            return
+        if kind == protocol.ROOM_LEFT:
+            if msg.get("room_id") == self.room_id:
+                self._reset_room_view()
+                self.room_id = None
+                self.screen_name = SCREEN_LOBBY
+            return
+        if (kind not in (protocol.WELCOME, protocol.ERROR, protocol.ROOMS,
+                         protocol.ROOM_LEFT) and msg.get("room_id") != self.room_id):
+            return
         if kind == protocol.WELCOME:
+            keep_draft = (self.screen_name == SCREEN_CREATE_ROOM and msg.get("reconnected")
+                          and msg.get("room_id") is None)
+            old_room = self.room_id
+            self.room_id = msg.get("room_id")
             self.my_id = msg.get("client_id")
             self.role = msg.get("role")
             self.token = msg.get("token") or self.token
             self.welcome = msg.get("message", "")
+            self.room_name_active = msg.get("room_name", "")
             self.welcome_dims = msg.get("dims")
             self.joined = True
             self.reconnect_until = None
             self.rejoin_pending = False
-            self.screen_name = SCREEN_GAME
+            self.screen_name = SCREEN_GAME if self.room_id is not None else SCREEN_LOBBY
+            if keep_draft:
+                self.screen_name = SCREEN_CREATE_ROOM
+            if old_room != self.room_id:
+                self._reset_room_view()
             self.leaderboard = msg.get("leaderboard", self.leaderboard)
             self.chat_lines = list(msg.get("chat", []))[-60:]
             self.chat_scroll = 0
             self.say(self.welcome, 4)
-            if not self.prefs.get("rules_seen"):
-                self._open_rules()          # first time here: explain the game
+            if self.screen_name == SCREEN_LOBBY:
+                self.net.send(protocol.LIST_ROOMS)
+            elif self.screen_name == SCREEN_GAME and not self.prefs.get("rules_seen"):
+                self._open_rules()
         elif kind == protocol.CLIENTS:
             self.clients = {"count": msg.get("count", 0),
                             "list": msg.get("list", []),
@@ -808,8 +844,38 @@ class ClientUI:
                          "opened": len(self._known_open())}
             self.sound.play("hint")
         elif kind == protocol.ERROR:
-            self.say(msg.get("message", "That isn't allowed right now"))
+            self.say(msg.get("message", "not allowed"))
+            self.room_error = msg.get("message", "not allowed")
             self.sound.play("error")
+
+    def _reset_room_view(self):
+        self.state = None
+        self.welcome_dims = None
+        self.clients = {"count": 0, "list": [], "bots": []}
+        self.chat_lines, self.chat_input = [], ""
+        self.chat_focus = False
+        self.chat_scroll = 0
+        self.leaderboard = []
+        self.hint = self.match_end = None
+        self.voted_rematch = False
+        self.reveal_times.clear()
+        self._known = {}
+        self.settings_open = False
+        self._prev_turn = None
+        self.room_error = ""
+        self.rules_open = False
+        self.flag_times.clear()
+        self._known_flags.clear()
+        self.hover.clear()
+        self.score_bump.clear()
+        self._known_scores.clear()
+        self.particles.clear()
+        self.rings.clear()
+        self.shake = 0.0
+
+    def _send_game(self, msg_type, **payload):
+        if self.room_id is not None:
+            self.net.send(msg_type, room_id=self.room_id, **payload)
 
     def _confetti(self):
         colours = [P1, P2, WARN, GOOD, ACCENT, TEXT]
@@ -1109,10 +1175,10 @@ class ClientUI:
     def _send_cell(self, msg_type, cell):
         if self.is_3d:
             layer, row, col = cell
-            self.net.send(msg_type, layer=layer, row=row, col=col)
+            self._send_game(msg_type, layer=layer, row=row, col=col)
         else:
             row, col = cell
-            self.net.send(msg_type, row=row, col=col)
+            self._send_game(msg_type, row=row, col=col)
 
     # ------------------------------------------------------------------
     # main loop and input
@@ -1144,6 +1210,10 @@ class ClientUI:
 
         if self.screen_name == SCREEN_NICKNAME:
             self._on_nickname_event(event)
+        elif self.screen_name == SCREEN_LOBBY:
+            self._on_lobby_event(event)
+        elif self.screen_name == SCREEN_CREATE_ROOM:
+            self._on_create_event(event)
         elif self.screen_name == SCREEN_GAME:
             if event.type == pygame.KEYDOWN:
                 self._on_game_key(event)
@@ -1161,17 +1231,12 @@ class ClientUI:
                 self.screen_name = SCREEN_NICKNAME
 
     def _on_nickname_event(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            for level, _label, rect in self._start_buttons():
-                if rect.collidepoint(event.pos):
-                    self.vs = level
-            return
         if event.type != pygame.KEYDOWN:
             return
         if event.key == pygame.K_RETURN:
             if self.nickname.strip() and self.net.status == "connected":
-                self.net.send(protocol.JOIN, nickname=self.nickname.strip(),
-                              vs=self.vs)
+                self.nickname = self.nickname.strip()
+                self.net.send(protocol.JOIN, nickname=self.nickname)
         elif event.key == pygame.K_BACKSPACE:
             self.nickname = self.nickname[:-1]
         elif event.key == pygame.K_ESCAPE:
@@ -1180,6 +1245,10 @@ class ClientUI:
             self.nickname += event.unicode
 
     def _on_wheel(self, event):
+        if self.screen_name == SCREEN_LOBBY:
+            self.room_scroll = max(0, min(max(0, len(self.rooms) - 1),
+                                         self.room_scroll - event.y))
+            return
         if self.tab != "chat":
             return
         log, _quick, _input = self._chat_rects()
@@ -1220,11 +1289,7 @@ class ClientUI:
         self.say("Animations on" if self.fx_on else "Animations off", 1.5)
 
     def _toggle_ranked(self):
-        if self.role != "player":
-            self.say("Only players can change the match type", 1.5)
-            return
-        curr = (self.state or {}).get("ranked", True)
-        self.net.send(protocol.SET_RANKED, ranked=not curr)
+        self.say("Room settings cannot change during a match", 1.5)
 
     def _set_theme(self, name):
         apply_theme(name)
@@ -1242,12 +1307,12 @@ class ClientUI:
         elif not self.my_turn:
             self.say("Wait for your turn, then ask the coach")
         else:
-            self.net.send(protocol.HINT)
+            self._send_game(protocol.HINT)
 
     def _send_chat(self, text):
         text = text.strip()
         if text:
-            self.net.send(protocol.CHAT, text=text)
+            self._send_game(protocol.CHAT, text=text)
 
     def _on_game_key(self, event):
         if self.rules_open:
@@ -1323,14 +1388,14 @@ class ClientUI:
             if self.sound_rect.collidepoint(event.pos):
                 self._toggle_sound()
                 return
-            if self.ranked_rect.collidepoint(event.pos):
-                self._toggle_ranked()
-                return
             if self.theme_rect.collidepoint(event.pos):
                 self.theme_open = True
                 return
             if self.rules_rect.collidepoint(event.pos):
                 self._open_rules()
+                return
+            if self.leave_rect.collidepoint(event.pos):
+                self._send_game(protocol.LEAVE_ROOM)
                 return
         if self.reconnecting:
             return
@@ -1339,23 +1404,11 @@ class ClientUI:
                     and self._end_progress() > 0.5
                     and self.rematch_rect.collidepoint(event.pos)):
                 if self.role == "player":
-                    self.net.send(protocol.REMATCH)
+                    self._send_game(protocol.REMATCH)
                     self.voted_rematch = True
             return
         if self._settings_click(event):
             return
-
-        if event.button == 1:
-            for mode, box in self.mode_rects:
-                if box.collidepoint(event.pos):
-                    if self.role != "player":
-                        self.say("Only players can change the mode")
-                    elif mode != self.mode:
-                        self.net.send(protocol.SET_MODE, mode=mode)
-                        self.settings_open = mode == game_rules.MODE_CUSTOM
-                    elif mode == game_rules.MODE_CUSTOM:
-                        self.settings_open = not self.settings_open
-                    return
 
         hit = self.cell_at(event.pos)
         if hit is None:
@@ -1444,10 +1497,7 @@ class ClientUI:
         if self.tab == "play":
             for level, _label, rect in self._opponent_buttons():
                 if rect.collidepoint(pos):
-                    if self.role != "player":
-                        self.say("Only players can pick an opponent")
-                    else:
-                        self.net.send(protocol.SET_BOT, level=level)
+                    self.say("Opponent is fixed when room is created")
                     return True
             ask, odds = self._coach_buttons()
             if ask.collidepoint(pos):
@@ -1502,7 +1552,7 @@ class ClientUI:
         self._card(card, "OPPONENT")
         level = (self.state or {}).get("bot_level", "off")
         for value, label, rect in self._opponent_buttons():
-            self._button(rect, label, active=value == level)
+            self._button(rect, label, active=value == level, enabled=False)
         seated = (self.state or {}).get("bot_seated")
         if seated:
             name = next((p["name"] for p in self.players if p.get("bot")), "Computer")
@@ -1512,9 +1562,9 @@ class ClientUI:
         elif len(self.players) >= 2:
             line = "Two players, head to head"
         else:
-            line = "Waiting for a friend - or pick a bot"
-        self.text(self.fit(line, self.f_small, card.w - 32),
-                  (card.x + 16, card.y + 88), self.f_small, MUTED)
+            line = "Waiting for another player"
+        self.text(self.fit(line, self.f_small, card.w - 28),
+                  (card.x + 14, card.y + 84), self.f_small, MUTED)
 
     def _draw_coach(self):
         card = self.cards["coach"]
@@ -1719,6 +1769,10 @@ class ClientUI:
         self._blit_bg()
         if self.screen_name == SCREEN_NICKNAME:
             self._draw_nickname()
+        elif self.screen_name == SCREEN_LOBBY:
+            self._draw_lobby()
+        elif self.screen_name == SCREEN_CREATE_ROOM:
+            self._draw_create_room()
         elif self.screen_name == SCREEN_ERROR:
             self._draw_error()
         else:
@@ -1807,16 +1861,12 @@ class ClientUI:
                       center=True)
         self.text("YOUR NICKNAME", (box.x + 4, box.y - 22), self.f_card, MUTED)
 
-        self.text("WHO DO YOU WANT TO PLAY?", (mid - 216, 446), self.f_card, MUTED)
-        for level, label, rect in self._start_buttons():
-            self._button(rect, label, active=level == self.vs, small=False)
-        self.text("A friend joins from another computer" if self.vs == "off"
-                  else "You against the computer - level: %s" % self.vs,
-                  (mid, 530), self.f_small, MUTED, center=True)
+        self.text("Create or join a room after choosing your nickname",
+                  (mid, 490), self.f_small, MUTED, center=True)
 
         if self.net.status == "connected":
             ready = bool(self.nickname.strip())
-            self.text("Press ENTER to jump in" if ready
+            self.text("Press ENTER to continue" if ready
                       else "Pick a nickname to start",
                       (mid, 576), self.f_body, GOOD if ready else MUTED,
                       center=True)
@@ -1827,6 +1877,168 @@ class ClientUI:
         # proof for the demo that the address comes from the source, not the user
         self.text("server %s  (set in config.py)" % self.net.address,
                   (mid, 640), self.f_small, MUTED, center=True)
+
+    def _room_rects(self, index):
+        y = 148 + index * 82
+        return pygame.Rect(50, y, WIN_W - 100, 72), pygame.Rect(WIN_W - 300, y + 18, 100, 36), pygame.Rect(WIN_W - 188, y + 18, 100, 36)
+
+    def _draw_lobby(self):
+        self.text("ROOM LOBBY", (WIN_W // 2, 48), self.f_title, TEXT, center=True)
+        self.text("Playing as %s" % self.nickname, (52, 102), self.f_body, MUTED)
+        create = pygame.Rect(WIN_W - 300, 88, 120, 38)
+        refresh = pygame.Rect(WIN_W - 168, 88, 116, 38)
+        self._button(create, "Create room", active=True)
+        self._button(refresh, "Refresh")
+        visible = max(1, (WIN_H - 180) // 82)
+        for offset, room in enumerate(self.rooms[self.room_scroll:self.room_scroll + visible]):
+            card, join, watch = self._room_rects(offset)
+            self.gx.rect(self.screen, PANEL, card, border_radius=10)
+            self.gx.rect(self.screen, LINE, card, width=1, border_radius=10)
+            phase = room.get("phase", "waiting")
+            mode = room.get("mode_label", room.get("mode", ""))
+            ranked = "Ranked" if room.get("ranked") and room.get("rated") else "Unrated"
+            bot = room.get("bot_level", "off")
+            info = "%s · %s · %s · %s · %d/2 players · %d spectators" % (
+                mode, ranked, ("bot " + bot) if bot != "off" else "2 players",
+                phase, room.get("players", 0), room.get("spectators", 0))
+            self.text(self.fit(room.get("name", "Room"), self.f_head, 400),
+                      (card.x + 16, card.y + 10), self.f_head, TEXT)
+            self.text(self.fit(info, self.f_small, card.width - 340),
+                      (card.x + 16, card.y + 44), self.f_small, MUTED)
+            self._button(join, "Join", active=True, enabled=room.get("joinable", False))
+            self._button(watch, "Watch")
+        if not self.rooms:
+            self.text("No rooms yet. Create one to start playing.", (WIN_W // 2, 180), self.f_body, MUTED, center=True)
+        self.text("Scroll to browse rooms", (WIN_W // 2, WIN_H - 34), self.f_small, MUTED, center=True)
+
+    def _on_lobby_event(self, event):
+        if event.type == pygame.MOUSEWHEEL:
+            self._on_wheel(event)
+            return
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        if pygame.Rect(WIN_W - 300, 88, 120, 38).collidepoint(event.pos):
+            self.create_mode = config.DEFAULT_MODE
+            self.create_bot = "off"
+            self.create_ranked = True
+            self.room_error = ""
+            self.screen_name = SCREEN_CREATE_ROOM
+        elif pygame.Rect(WIN_W - 168, 88, 116, 38).collidepoint(event.pos):
+            self.net.send(protocol.LIST_ROOMS)
+        else:
+            visible = max(1, (WIN_H - 180) // 82)
+            for i, room in enumerate(self.rooms[self.room_scroll:self.room_scroll + visible]):
+                _card, join, watch = self._room_rects(i)
+                if join.collidepoint(event.pos) and room.get("joinable"):
+                    self.net.send(protocol.JOIN_ROOM, room_id=room["id"], watch=False)
+                    return
+                if watch.collidepoint(event.pos):
+                    self.net.send(protocol.JOIN_ROOM, room_id=room["id"], watch=True)
+                    return
+
+    def _create_mode_rects(self):
+        width, gap = 116, 8
+        total = len(game_rules.MODES) * width + (len(game_rules.MODES) - 1) * gap
+        x = (WIN_W - total) // 2
+        return [(mode, pygame.Rect(x + i * (width + gap), 190, width, 34))
+                for i, mode in enumerate(game_rules.MODES)]
+
+    def _draw_create_room(self):
+        self.text("CREATE ROOM", (WIN_W // 2, 42), self.f_title, TEXT, center=True)
+        self.text("Room name", (170, 100), self.f_body, MUTED)
+        namebox = pygame.Rect(330, 92, 520, 42)
+        self.gx.rect(self.screen, PANEL, namebox, border_radius=8)
+        self.gx.rect(self.screen, ACCENT, namebox, width=1, border_radius=8)
+        self.text(self.room_name, (namebox.x + 12, namebox.y + 10), self.f_body, TEXT)
+        self.text("Mode", (170, 158), self.f_body, MUTED)
+        for mode, rect in self._create_mode_rects():
+            self._button(rect, game_rules.MODE_LABELS.get(mode, mode), active=mode == self.create_mode)
+        self.text(game_rules.MODE_BLURBS.get(self.create_mode, ""), (WIN_W // 2, 236), self.f_small, MUTED, center=True)
+        if self.create_mode == game_rules.MODE_CUSTOM:
+            y = 278
+            for label, key, step in CUSTOM_STEPS:
+                self.text("%s: %s" % (label, self.create_custom[key]), (220, y + 4), self.f_small, TEXT)
+                self._button(pygame.Rect(520, y, 40, 30), "-")
+                self._button(pygame.Rect(570, y, 40, 30), "+")
+                y += 38
+            for label, key, choices in CUSTOM_CHOICES:
+                self.text(label, (220, y + 4), self.f_small, TEXT)
+                x = 520
+                for value, title in choices:
+                    rect = pygame.Rect(x, y, 102, 30)
+                    self._button(rect, title, active=self.create_custom[key] == value)
+                    x += 108
+                y += 38
+            y += 4
+        else:
+            y = 286
+        self.text("Opponent", (220, y + 4), self.f_body, MUTED)
+        for i, (level, label) in enumerate(OPPONENTS):
+            rect = pygame.Rect(520 + i * 108, y, 102, 34)
+            self._button(rect, label, active=self.create_bot == level)
+        y += 54
+        ranked = pygame.Rect(520, y, 180, 36)
+        eligible = self.create_mode != game_rules.MODE_CUSTOM and self.create_bot == "off"
+        self._button(ranked, "Ranked: " + ("on" if self.create_ranked and eligible else "off"),
+                     active=self.create_ranked and eligible, enabled=eligible)
+        if self.create_mode == game_rules.MODE_CUSTOM or self.create_bot != "off":
+            self.text("Custom and bot rooms are always unrated.", (720, y + 8), self.f_small, WARN)
+        self._button(pygame.Rect(430, WIN_H - 100, 150, 42), "Create", active=True)
+        self._button(pygame.Rect(600, WIN_H - 100, 130, 42), "Back")
+        if self.room_error:
+            self.text(self.fit(self.room_error, self.f_small, 700), (WIN_W // 2, WIN_H - 42), self.f_small, BAD, center=True)
+
+    def _on_create_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_BACKSPACE:
+            self.room_name = self.room_name[:-1]
+            return
+        if event.type == pygame.KEYDOWN and event.unicode and event.unicode.isprintable() and len(self.room_name) < 32:
+            self.room_name += event.unicode
+            return
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        for mode, rect in self._create_mode_rects():
+            if rect.collidepoint(event.pos):
+                self.create_mode = mode
+                return
+        y = 278
+        if self.create_mode == game_rules.MODE_CUSTOM:
+            for _label, key, step in CUSTOM_STEPS:
+                if pygame.Rect(520, y, 40, 30).collidepoint(event.pos):
+                    self.create_custom[key] -= step
+                    self.create_custom = game_rules.clamp_custom(self.create_custom)
+                    return
+                if pygame.Rect(570, y, 40, 30).collidepoint(event.pos):
+                    self.create_custom[key] += step
+                    self.create_custom = game_rules.clamp_custom(self.create_custom)
+                    return
+                y += 38
+            for _label, key, choices in CUSTOM_CHOICES:
+                for i, (value, _label) in enumerate(choices):
+                    if pygame.Rect(520 + i * 108, y, 102, 30).collidepoint(event.pos):
+                        self.create_custom[key] = value
+                        self.create_custom = game_rules.clamp_custom(self.create_custom)
+                        return
+                y += 38
+            y += 4
+        else:
+            y = 286
+        for i, (level, _label) in enumerate(OPPONENTS):
+            if pygame.Rect(520 + i * 108, y, 102, 34).collidepoint(event.pos):
+                self.create_bot = level
+                return
+        y += 54
+        if pygame.Rect(520, y, 180, 36).collidepoint(event.pos):
+            if self.create_mode != game_rules.MODE_CUSTOM and self.create_bot == "off":
+                self.create_ranked = not self.create_ranked
+        elif pygame.Rect(430, WIN_H - 100, 150, 42).collidepoint(event.pos):
+            self.net.send(protocol.CREATE_ROOM, name=self.room_name.strip() or "Room",
+                          mode=self.create_mode, custom=self.create_custom,
+                          bot_level=self.create_bot,
+                          ranked=self.create_ranked and self.create_mode != game_rules.MODE_CUSTOM and self.create_bot == "off")
+        elif pygame.Rect(600, WIN_H - 100, 130, 42).collidepoint(event.pos):
+            self.room_error = ""
+            self.screen_name = SCREEN_LOBBY
 
     def _draw_error(self):
         mid = WIN_W // 2
@@ -1870,13 +2082,15 @@ class ClientUI:
 
     def _draw_titlebar(self):
         self._draw_bomb((38, 30), 9, self.now, glow=0.0, fuse=True)
-        self.text("FIND MY MINES", (60, 14), self.f_title, TEXT)
+        room_name = getattr(self, "room_name_active", "") or "FIND MY MINES"
+        self.text(self.fit(room_name, self.f_title, 210), (60, 14), self.f_title, TEXT)
         self._button(self.sound_rect, "Sound off" if self.sound.muted else "Sound on",
                      active=not self.sound.muted)
-        ranked = (self.state or {}).get("ranked", True)
-        self._button(self.ranked_rect, "Ranked" if ranked else "Casual",
-                     active=ranked)
+        ranked = (self.state or {}).get("rated", (self.state or {}).get("ranked", True))
+        self.text("Ranked room" if ranked else "Unrated room", self.ranked_rect.center,
+                  self.f_small, ACCENT if ranked else MUTED, center=True)
         self._button(self.theme_rect, "Theme: %s" % THEME_LABEL)
+        self._button(self.leave_rect, "Leave room")
         self._button(self.rules_rect, "? Rules")
         # a little chevron on the theme button
         cx, cy = self.theme_rect.right - 14, self.theme_rect.centery
@@ -1889,7 +2103,6 @@ class ClientUI:
 
     def _draw_modes(self):
         """The mode bar - this is where the extra games are found."""
-        mouse = self.mouse()
         first = self.mode_rects[0][1]
         last = self.mode_rects[-1][1]
         bar = pygame.Rect(first.x - 5, first.y - 5, last.right - first.x + 10,
@@ -1897,12 +2110,9 @@ class ClientUI:
         self._panel(bar, radius=13, shadow=False)
         for mode, box in self.mode_rects:
             active = mode == self.mode
-            hot = box.collidepoint(mouse) and self.role == "player"
             if active:
-                self.gx.rect(self.screen, BTN_HOT if hot else BTN, box,
+                self.gx.rect(self.screen, BTN, box,
                                  border_radius=9)
-            elif hot:
-                self.gx.rect(self.screen, PANEL_2, box, border_radius=9)
             self.text(game_rules.MODE_LABELS.get(mode, mode), box.center,
                       self.f_small, BTN_TEXT if active else MUTED, center=True)
         blurb = game_rules.MODE_BLURBS.get(self.mode, "")
@@ -1953,7 +2163,7 @@ class ClientUI:
                 return True
             current = self.custom
             wanted = (current.get(key, 0) + value) if is_step else value
-            self.net.send(protocol.SET_CUSTOM, settings={key: wanted})
+            self.say("Room settings are fixed")
             return True
         return card.collidepoint(event.pos)   # clicks on the card do nothing
 
@@ -2207,7 +2417,7 @@ class ClientUI:
         state = self.state or {}
         if p.get("bot"):
             return "Computer"
-        if not state.get("ranked", True):
+        if not state.get("rated", state.get("ranked", True)):
             return "Casual"
         mode = state.get("mode", "classic")
         ranked_modes = getattr(config, "ELO_RANKED_MODES",
@@ -2719,7 +2929,7 @@ class ClientUI:
         left, right = card.x + 30, card.right - 30
         y = card.y + 108
         elo_changes = end.get("elo_changes", {})
-        is_ranked_match = end.get("ranked", True)
+        is_ranked_match = end.get("rated", end.get("ranked", True))
         elapsed = self.now - self.match_end_time - END_DELAY - 0.35
         progress = clamp(elapsed / 1.0)
         eased = 1.0 - (1.0 - progress) ** 3

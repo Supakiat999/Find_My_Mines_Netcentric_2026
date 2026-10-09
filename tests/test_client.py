@@ -13,7 +13,7 @@ import game as g
 import protocol
 
 run = ServerRunner(55603)
-srv, game = run.srv, run.game
+srv, game = run.srv, None
 uis = []
 
 
@@ -27,10 +27,10 @@ def press(ui, pos, button=1):
 
 
 def click_cell(ui, cell, button=1):
-    ui_wait(lambda: ui.cell_at(ui.cell_rect(cell).center) == cell, "geometry")
+    ui_wait(lambda: ui.cell_at(ui._cell_center(cell)) == cell, "geometry")
     if button == 1:
         ui_wait(lambda: ui.can_click(cell), "the client to see its turn")
-    press(ui, ui.cell_rect(cell).center, button)
+    press(ui, ui._cell_center(cell), button)
 
 
 def open_slot():
@@ -39,17 +39,25 @@ def open_slot():
 
 alice = client_mod.ClientUI(); uis.append(alice)
 bob = client_mod.ClientUI(); uis.append(bob)
+alice.prefs["rules_seen"] = bob.prefs["rules_seen"] = True
 
 # --- 1. both connect and join -------------------------------------------
 ui_wait(lambda: alice.net.status == "connected" and bob.net.status == "connected",
         "sockets")
 assert alice.screen_name == client_mod.SCREEN_NICKNAME
 alice.net.send(protocol.JOIN, nickname="Alice")
-ui_wait(lambda: alice.screen_name == client_mod.SCREEN_GAME, "Alice in the game")
+ui_wait(lambda: alice.screen_name == client_mod.SCREEN_LOBBY, "Alice in the lobby")
 assert alice.welcome == "Welcome, Alice."
 bob.net.send(protocol.JOIN, nickname="Bob")
-ui_wait(lambda: bob.screen_name == client_mod.SCREEN_GAME, "Bob in the game")
+ui_wait(lambda: bob.screen_name == client_mod.SCREEN_LOBBY, "Bob in the lobby")
 assert bob.welcome == "Welcome, Bob."
+alice.net.send(protocol.CREATE_ROOM, name="testroom", mode=g.MODE_CLASSIC,
+                custom={}, bot_level="off", ranked=True)
+ui_wait(lambda: alice.screen_name == client_mod.SCREEN_GAME, "Alice creates testroom")
+game = next(iter(srv.rooms.values())).game
+ui_wait(lambda: bob.rooms, "room list")
+bob.net.send(protocol.JOIN_ROOM, room_id=bob.rooms[0]["id"], watch=False)
+ui_wait(lambda: bob.screen_name == client_mod.SCREEN_GAME, "Bob joins testroom")
 ok(1, "both windows connect, take a nickname, and are welcomed by name")
 
 # --- 2. same board, one turn --------------------------------------------
@@ -65,7 +73,7 @@ idle = bob if alice.my_turn else alice
 idle_cell = open_slot()
 assert not idle.can_click(idle_cell)
 press(idle, idle.cell_rect(idle_cell).center)
-assert "Not your turn" in idle.toast
+assert "not your turn" in idle.toast.lower()
 ok(3, "the window off turn refuses clicks and says why")
 
 # --- 4. a whole match through the mouse ----------------------------------
@@ -89,6 +97,8 @@ ok(4, "%d mouse clicks played a whole match; both ended together %s"
 
 # --- 5. rematch -----------------------------------------------------------
 winner = alice.match_end["winner_id"]
+time.sleep(client_mod.END_DELAY + client_mod.END_FADE + 0.05)
+alice.draw(); bob.draw()
 press(alice, alice.rematch_rect.center)
 assert alice.voted_rematch
 time.sleep(0.3)
@@ -107,27 +117,36 @@ ui_wait(lambda: "reset" in alice.toast.lower(), "reset notice")
 ok(6, "the server's Reset reaches both windows")
 
 
-# --- 7. the mode bar, flags, and the custom panel ------------------------
-def choose(mode):
-    box = dict(alice.mode_rects)[mode]
-    press(alice, box.center)
-    ui_wait(lambda: game.mode == mode and game.phase == g.PHASE_PLAYING, mode)
-    ui_wait(lambda: alice.mode == mode and bob.mode == mode, "clients on " + mode)
+# --- 7. room modes, flags, and custom creation ---------------------------
+def recreate(mode, custom=None):
+    global game, by_id
+    alice.net.send(protocol.LEAVE_ROOM)
+    bob.net.send(protocol.LEAVE_ROOM)
+    ui_wait(lambda: alice.screen_name == client_mod.SCREEN_LOBBY
+             and bob.screen_name == client_mod.SCREEN_LOBBY, "leave old room")
+    alice.net.send(protocol.CREATE_ROOM, name="testroom", mode=mode,
+                    custom=custom or {}, bot_level="off", ranked=mode != g.MODE_CUSTOM)
+    ui_wait(lambda: alice.screen_name == client_mod.SCREEN_GAME, "create " + mode)
+    game = srv.rooms[alice.room_id].game
+    ui_wait(lambda: bob.rooms, "room list")
+    bob.net.send(protocol.JOIN_ROOM, room_id=alice.room_id, watch=False)
+    ui_wait(lambda: bob.screen_name == client_mod.SCREEN_GAME, "join " + mode)
+    ui_wait(lambda: game.phase == g.PHASE_PLAYING, "match in " + mode)
+    by_id = {alice.my_id: alice, bob.my_id: bob}
 
 
-choose(g.MODE_RADIUS2)
-choose(g.MODE_CUBE)
+recreate(g.MODE_CUBE)
 ui_wait(lambda: alice.is_3d, "cube layout")
-spots = {alice.cell_at(alice.cell_rect(c).center) for c in alice.board_cells()}
+spots = {alice.cell_at(alice._cell_center(c)) for c in alice.board_cells()}
 assert None not in spots and len(spots) == 64
 cube_cell = open_slot()
 who = by_id[game.current_turn]
 before = len(game.revealed)
 click_cell(who, cube_cell)
 ui_wait(lambda: len(game.revealed) > before, "a click into a cube layer")
-ok(7, "mode buttons work; all 64 cube slots are clickable and layers round-trip")
+ok(7, "cube room has 64 clickable slots and layers round-trip")
 
-choose(g.MODE_SWEEPER)
+recreate(g.MODE_SWEEPER)
 who = by_id[game.current_turn]
 safe = next(c for c in game.cells() if c not in game.revealed
             and c not in game.bombs)
@@ -139,34 +158,16 @@ click_cell(who, safe, button=3)
 ui_wait(lambda: safe not in game.flags, "the flag to lift")
 ok(8, "right-click plants and lifts a flag, and a flagged slot cannot be opened")
 
-choose(g.MODE_CUSTOM)
-ui_wait(lambda: alice.settings_open and alice.custom.get("size"), "settings panel")
-
-
-def panel(key, want):
-    ui_wait(lambda: alice.custom == game.custom, "settings in sync")
-    _card, controls, _close = alice._settings_widgets()
-    for rect, ckey, value, is_step in controls:
-        if ckey != key:
-            continue
-        if is_step and (value > 0) != (want > alice.custom[key]):
-            continue
-        if not is_step and value != want:
-            continue
-        press(alice, rect.center)
-        return
-    raise AssertionError("no control for " + key)
-
-
-size = alice.custom["size"]
-panel("size", size + 1)
-ui_wait(lambda: game.custom["size"] == size + 1 and alice.dims == (size + 1,) * 2,
-        "a bigger board")
-panel("shape", "cube")
+custom = dict(config.DEFAULT_CUSTOM)
+custom["size"] = 4
+custom["shape"] = "cube"
+recreate(g.MODE_CUSTOM, custom)
+ui_wait(lambda: alice.custom == custom and alice.dims == (custom["size"],) * 3,
+        "custom room settings")
 ui_wait(lambda: alice.is_3d and bob.is_3d, "a custom cube")
-assert None not in {alice.cell_at(alice.cell_rect(c).center)
+assert None not in {alice.cell_at(alice._cell_center(c))
                     for c in alice.board_cells()}
-ok(9, "the custom panel resizes the board and switches it to a cube; "
+ok(9, "custom room settings resize the board and switch it to a cube; "
       "every slot stays clickable")
 
 run.stop()

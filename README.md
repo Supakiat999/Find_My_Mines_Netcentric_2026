@@ -1,14 +1,15 @@
 # Find_My_Mines_Netcentric_2026
 
 Netcentric Project — a two-player online *Find My Mines* game built with **socket
-programming** on a client–server model.
+programming** on a client–server model. One server hosts multiple independent
+two-player rooms, with a lobby for creating, joining, and watching games.
 
 The server randomly hides **11 bombs on a 6×6 grid**. Two players take turns
 opening slots on a 10-second clock. Find a bomb and you keep your turn; open an
 empty slot and it shows how many bombs surround it and the turn passes. One point
 per bomb; the match ends when all 11 are found.
 
-**Stack:** Python 3 · `socket` (stdlib TCP) · `pygame`
+**Stack:** Python 3 · `socket` (stdlib TCP) · `pygame` · optional PostgreSQL (Psycopg 3)
 
 ---
 
@@ -58,11 +59,24 @@ You are reading the `feature/elo` branch.
 
 ## KK Plus features
 
+### Rooms and lobby
+
+Enter a nickname to open the room list. **Create Room** chooses the room name,
+game mode, custom board, computer difficulty, and Ranked/Casual setting. **Join**
+takes an available player seat; **Watch** joins as a spectator. Human matches start
+when two players join; computer rooms start immediately and reserve one seat for
+the bot. **Leave Room** returns to the lobby without closing the connection.
+
+Settings are fixed for the room and its rematches. Create another room to change
+them. Boards, clocks, chat, hints, rematches, reconnect pauses, and resets are
+room-local. Empty rooms disappear after reconnect reservations and pending saves
+finish. Rooms do not survive a server restart; completed match records do.
+
 Everything in KK, plus eight more features. **Two are AI.**
 
 | # | Feature | What it does |
 |---|---|---|
-| 1 | **Play the computer** (AI) | Choose **2 Players, Easy, Medium or Hard** on the start screen, or switch any time on the OPPONENT card on the right. Each mode has one trained model (see [Training the bots](#training-the-bots)); the levels are that same model played looser or tighter. With one person connected the computer takes the other seat and plays by itself after a short pause, in every mode. It always agrees to a rematch, steps aside when a second person joins, and comes back if they leave. |
+| 1 | **Play the computer** (AI) | Choose **2 Players, Easy, Medium or Hard** when creating a room. Computer rooms reserve the second seat for the bot; other visitors watch. The computer plays automatically and agrees to rematches. Trained models fall back to the probability solver when unavailable. |
 | 2 | **AI coach** (AI) | On your turn, **Ask the coach** (or press **H**) names the best slot and tints every covered slot with its odds. Three questions per player per match. On boards too big to count exactly the answer is marked as an estimate. |
 | 3 | **Chat** | A chat panel for players and spectators, with quick replies (GG, Nice!, Oops, Again?). Messages are trimmed to 120 characters and rate-limited; people who join late see recent history. |
 | 4 | **Hall of fame and match stats** | The end screen shows picks, best chain and hit rate for each player. Wins, losses and points are kept per nickname in `stats.json`, so the table survives restarts. The computer is never listed. |
@@ -95,7 +109,7 @@ nor the coach can see hidden bombs. Measured results are in
 python tests/run_all.py
 ```
 
-Eight headless suites (the bot one skips without torch) - no window opens and no sound plays. Run one
+Headless suites (the bot one skips without torch) - no window opens and no sound plays. Run one
 with `python tests/run_all.py ai`.
 
 ---
@@ -116,10 +130,8 @@ The `feature/elo` branch adds skill-based matchmaking ratings and tier progressi
 
 ## Game modes
 
-The mode is chosen on the **server console**, from the row of buttons beside
-RESET. Changing it deals a fresh board for everyone at once. `Classic` is the
-default and is exactly the game the assignment asks for, so the graded rules are
-never disturbed by the extras.
+Choose the mode on **Create Room**. It stays fixed for that room, including
+rematches. `Classic` remains the default assignment rules.
 
 | Mode | Board | How it plays |
 |---|---|---|
@@ -131,8 +143,8 @@ never disturbed by the extras.
 
 ### Custom settings
 
-Pick **Custom** and a panel opens. Either player can change any of it while you
-play; the board is re-dealt the moment something changes.
+Pick **Custom** when creating a room to set its board and rules before anyone
+plays. In-game settings are read-only.
 
 | Setting | Choices |
 |---|---|
@@ -160,8 +172,10 @@ off from your opponent.
 | `protocol.py` | Newline-delimited JSON framing over TCP, plus a reader that reassembles messages split across packets. |
 | `game.py` | Pure game rules — bomb placement, neighbour counts, turn order, scoring. No sockets, no GUI. |
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
+| `room.py` | Independent games, room membership, clocks, bots, chat, reconnects, and match results. |
 | `client.py` | The game client: nickname screen, board, scoreboard, countdown, win/lost overlay and rematch. |
-| `requirements.txt` | The one dependency, pygame. |
+| `requirements.txt` | Pygame, Psycopg 3, and python-dotenv for `.env` configuration. |
+| `database.py`, `db/`, `compose.yaml` | Transactional PostgreSQL storage and Docker setup. |
 | `ai.py` | The probability engine behind the coach, and the computer opponent's fallback. Sees only the visible board. |
 | `botbrain.py` | Picks who plays the computer's moves: the trained model, or `ai.py` when a mode has none. |
 | `stats.py` | The hall of fame, saved to `stats.json`. |
@@ -178,12 +192,16 @@ off from your opponent.
 
 ## Requirements
 
-Python 3.8+ (developed on 3.13). The only third-party package is pygame —
-everything else (`socket`, `threading`, `json`, `queue`) ships with Python:
+Python 3.8+ (developed on 3.13). Pygame runs the game; Psycopg 3 enables optional
+PostgreSQL persistence; python-dotenv loads `.env` configuration automatically.
+Networking (`socket`, `threading`, `json`, `queue`) ships with Python:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+For Docker PostgreSQL, JSON migration, backups, and database tests, see
+[PostgreSQL persistence](HOW_TO_RUN.md#postgresql-persistence-optional).
 
 ---
 
@@ -281,17 +299,26 @@ The pygame window is the server's control panel:
 - **Activity** — a running log of joins, picks, timeouts, and match results
 - **RESET GAME** — clears the board *and* both scores, then deals a fresh match
 
+Use **Previous** and **Next** to select a room. The console shows and resets only
+that room; other matches keep running.
+
 ---
 
 ## How it works
 
-Clients send only three messages; the server decides everything else and pushes
+Clients send lobby requests and room-scoped actions; the server decides everything else and pushes
 the resulting state back. The board sent to clients never contains unfound bomb
 positions, so a modified client cannot read them off the network.
 
 | Direction | Message | Payload |
 |---|---|---|
 | client → server | `join` | `nickname` |
+| client → server | `list_rooms` | — |
+| client → server | `create_room` | name, mode, custom, bot_level, ranked |
+| client → server | `join_room` | room_id, watch |
+| client → server | `leave_room` | — |
+| server → client | `rooms` | room summaries |
+| server → client | `room_left` | room_id |
 | client → server | `pick` | `row`, `col` |
 | client → server | `rematch` | — |
 | server → client | `welcome` | your id, role, `"Welcome, Alice."`, board size |
@@ -305,7 +332,8 @@ positions, so a modified client cannot read them off the network.
 **Threading.** An accept thread takes new connections and gives each client its
 own reader thread; those threads only push decoded messages onto a queue. The
 pygame main loop drains that queue, runs the clock, and does every state change
-and every send — so the game rules never need a lock.
+and every send — so the game rules never need a lock. It updates every room's
+clock and bot independently; lobby users are not assigned a game automatically.
 
 **Turn clock.** The countdown is owned by the server and broadcast once a second,
 so both players see the same time and no client can stall its own turn.

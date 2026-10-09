@@ -104,18 +104,23 @@ class Table:
             rec = server_mod.ClientRecord(
                 cid, DummySock(), ("192.168.100.%d" % (100 + cid), 51000 + cid))
             rec.name = name
+            rec.room_id = srv.selected_room_id
+            rec.watch = cid > len(names)
             rec.connected_at = rec.joined_at = now + cid
             srv.clients[cid] = rec
         if away is not None:
             rec = srv.clients[away]
             rec.alive = False
             rec.away_since = time.time() - 6
-        srv._reseat()
+        srv.selected_room._reseat()
 
     def stage(self, mode, names=("Alice", "Bob"), custom=None, reveal=8,
               extra=0, bot=None, away=None, ended=False):
-        srv = self.srv
-        srv.bot_level = bot or "off"
+        self.srv.rooms.clear()
+        room = server_mod.Room(self.srv, "Layout room", mode, custom or {}, bot or "off", True)
+        self.srv.rooms[room.id] = room
+        self.srv.selected_room_id = room.id
+        srv = room
         srv.game.rng = random.Random(5)
         if custom:
             srv.game.set_custom(custom)
@@ -136,7 +141,7 @@ class Table:
         if ended:
             srv.game.phase = game_rules.PHASE_ENDED
             srv.game.current_turn = None
-        srv.log.clear()
+        self.srv.log.clear()
         return json.loads(json.dumps(srv._state_payload())), \
             json.loads(json.dumps(srv._clients_payload()))
 
@@ -167,7 +172,7 @@ def instrument_client(ui, rec):
 
     ui.text = text
     for name in ("_draw_settings", "_draw_end_overlay", "_draw_toast",
-                 "_draw_reconnect_overlay"):
+                 "_draw_reconnect_overlay", "_draw_rules", "_draw_theme_menu"):
         inner = getattr(ui, name)
 
         def wrapped(*a, _inner=inner, _name=name, **k):
@@ -182,6 +187,7 @@ def load(ui, state, clients, me=1, role="player"):
     ui.reveal_times.clear()
     ui._known = {}
     ui.screen_name = client_mod.SCREEN_GAME
+    ui.room_name_active = "Room_" + "Long" * 6
     ui.joined = True
     ui.my_id = me
     ui.role = role
@@ -199,6 +205,7 @@ def load(ui, state, clients, me=1, role="player"):
     ui.chat_input = ""
     ui.chat_focus = False
     ui.seconds_left = 7
+    ui.tab = "play"
 
 
 def client_scenarios(ui):
@@ -216,6 +223,32 @@ def client_scenarios(ui):
         ui.screen_name = client_mod.SCREEN_NICKNAME
         ui.nickname = LONG_A
     S.append(("nickname screen", nickname))
+
+    def lobby(empty=False):
+        def setup():
+            ui.screen_name = client_mod.SCREEN_LOBBY
+            ui.room_scroll = 0
+            ui.toast = ""
+            ui.rooms = [] if empty else [
+                {"id": str(i), "name": "Room_" + "Long" * 6, "mode_label": "3D Cube",
+                 "ranked": True, "rated": False, "bot_level": "medium", "phase": "saving",
+                 "players": 2, "spectators": 25, "joinable": False} for i in range(12)]
+        return setup
+    S.append(("empty room lobby", lobby(True)))
+    S.append(("crowded room lobby", lobby()))
+
+    def creation(custom=False):
+        def setup():
+            ui.screen_name = client_mod.SCREEN_CREATE_ROOM
+            ui.room_name = "Room_" + "Long" * 6
+            ui.create_mode = "custom" if custom else "classic"
+            ui.create_bot = "medium" if custom else "off"
+            ui.create_custom = game_rules.clamp_custom({"shape": "cube", "size": 5, "bombs": 25})
+            ui.room_error = "Room creation failed: please review these settings before trying again."
+            ui.toast = ""
+        return setup
+    S.append(("create standard room", creation()))
+    S.append(("create custom room", creation(True)))
 
     def error():
         ui.screen_name = client_mod.SCREEN_ERROR
@@ -267,6 +300,7 @@ def client_scenarios(ui):
             ui.match_end = {"winner_id": None if draw else ids[winner],
                             "draw": draw, "players": players, "stats": stats,
                             "leaderboard": BOARD}
+            ui.match_end_time = time.monotonic() - 4
         return setup
     S.append(("end - you win", ended(0)))
     S.append(("end - you lost", ended(1)))
@@ -305,6 +339,7 @@ def client_scenarios(ui):
         ] * 5
         ui.chat_input = "a very long message being typed right now " * 3
         ui.chat_focus = True
+        ui.tab = "chat"
     S.append(("busy chat, long input", chat))
 
     def hall():
@@ -312,13 +347,14 @@ def client_scenarios(ui):
                                      reveal=8)
         state["leaderboard"] = BOARD
         load(ui, state, clients)
+        ui.tab = "ranks"
     S.append(("full hall of fame", hall))
 
     def coach(mode, custom=None, label=""):
         def setup():
             state, clients = TABLE.stage(mode, custom=custom, reveal=10)
             load(ui, state, clients)
-            info = TABLE.srv.game.public_info()
+            info = TABLE.srv.selected_room.game.public_info()
             advice = ai.advise(info["view"], info["dims"], info["weighted"],
                                info["bombs_left"], info["bombs_are_bad"])
             ui._handle({"type": protocol.HINT_RESULT,
@@ -358,7 +394,16 @@ def check_client(ui, rec, label):
                     problems.append("text overlap: %r x %r" % (ta, tb))
 
     if ui.screen_name == client_mod.SCREEN_GAME:
-        cells = [ui.cell_rect(c) for c in ui.board_cells()]
+        if ui.is_3d:
+            lay = ui._layout()
+            cells = []
+            for cell in ui.board_cells():
+                cx, cy = ui._cell_center(cell)
+                cells.append(pygame.Rect(int(cx - lay["tw"] / 2),
+                                         int(cy - lay["th"] / 2),
+                                         int(lay["tw"]), int(lay["th"])))
+        else:
+            cells = [ui.cell_rect(c) for c in ui.board_cells()]
         board = cells[0].unionall(cells[1:])
         centers = {c.center for c in cells}
         footer = pygame.Rect(24, H - 56, GW - 48, 44)
@@ -366,12 +411,16 @@ def check_client(ui, rec, label):
             problems.append("board off-window: %s" % (tuple(board),))
         if board.bottom > footer.top - 90:
             problems.append("board too low - no room for the status text")
-        buttons = [b for _m, b in ui.mode_rects]
-        buttons += [ui.sound_rect, ui.theme_rect] + ([ui.ranked_rect] if hasattr(ui, "ranked_rect") else [])
-        buttons += [r for _l, _t, r in ui._opponent_buttons()]
-        buttons += list(ui._coach_buttons())
-        buttons += ui._chat_rects()[1]
-        cards = ui.cards
+        buttons = [ui.sound_rect, ui.theme_rect, ui.leave_rect, ui.rules_rect]
+        if ui.tab == "play":
+            buttons += list(ui._coach_buttons())
+            cards = {name: card for name, card in ui.cards.items()
+                     if name in ("opponent", "coach", "tips")}
+        elif ui.tab == "chat":
+            buttons += ui._chat_rects()[1]
+            cards = {"chat": ui.cards["chat"]}
+        else:
+            cards = {name: ui.cards[name] for name in ("ranks", "online")}
         for r, t in by_layer.get(0, []):
             # a slot's own label (its number, the coach's odds, the player
             # marker on a bomb) is fine; text spread over the board is not
@@ -474,17 +523,17 @@ def check_server(ui, rec, label):
         for r, t, _o in texts:
             if r.colliderect(box):
                 problems.append("text on the board: %r" % t)
-    buttons = [b for _m, b in ui.mode_rects] + [ui.reset_rect]
+    buttons = [ui.previous_room_rect, ui.next_room_rect, ui.reset_rect]
     for r, t, _o in texts:
         for box in buttons:
             if r.colliderect(box) and r.center != box.center:
                 problems.append("text on a button: %r" % t)
-    for i, (_m, a) in enumerate(ui.mode_rects):
+    for i, a in enumerate(buttons):
         if not window.contains(a):
-            problems.append("mode button off-window")
-        for _m2, b in ui.mode_rects[i + 1:]:
+            problems.append("room button off-window")
+        for b in buttons[i + 1:]:
             if a.colliderect(b):
-                problems.append("mode buttons overlap")
+                problems.append("room buttons overlap")
     return ["[server] %s: %s" % (label, p) for p in problems]
 
 
