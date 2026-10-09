@@ -27,10 +27,10 @@ def press(ui, pos, button=1):
 
 
 def click_cell(ui, cell, button=1):
-    ui_wait(lambda: ui.cell_at(ui.cell_rect(cell).center) == cell, "geometry")
+    ui_wait(lambda: ui.cell_at(ui._cell_center(cell)) == cell, "geometry")
     if button == 1:
         ui_wait(lambda: ui.can_click(cell), "the client to see its turn")
-    press(ui, ui.cell_rect(cell).center, button)
+    press(ui, ui._cell_center(cell), button)
 
 
 def open_slot():
@@ -39,6 +39,7 @@ def open_slot():
 
 alice = client_mod.ClientUI(); uis.append(alice)
 bob = client_mod.ClientUI(); uis.append(bob)
+alice.prefs["rules_seen"] = bob.prefs["rules_seen"] = True
 
 # --- 1. both connect and join -------------------------------------------
 ui_wait(lambda: alice.net.status == "connected" and bob.net.status == "connected",
@@ -72,7 +73,7 @@ idle = bob if alice.my_turn else alice
 idle_cell = open_slot()
 assert not idle.can_click(idle_cell)
 press(idle, idle.cell_rect(idle_cell).center)
-assert "Not your turn" in idle.toast
+assert "not your turn" in idle.toast.lower()
 ok(3, "the window off turn refuses clicks and says why")
 
 # --- 4. a whole match through the mouse ----------------------------------
@@ -96,6 +97,8 @@ ok(4, "%d mouse clicks played a whole match; both ended together %s"
 
 # --- 5. rematch -----------------------------------------------------------
 winner = alice.match_end["winner_id"]
+time.sleep(client_mod.END_DELAY + client_mod.END_FADE + 0.05)
+alice.draw(); bob.draw()
 press(alice, alice.rematch_rect.center)
 assert alice.voted_rematch
 time.sleep(0.3)
@@ -134,7 +137,7 @@ def recreate(mode, custom=None):
 
 recreate(g.MODE_CUBE)
 ui_wait(lambda: alice.is_3d, "cube layout")
-spots = {alice.cell_at(alice.cell_rect(c).center) for c in alice.board_cells()}
+spots = {alice.cell_at(alice._cell_center(c)) for c in alice.board_cells()}
 assert None not in spots and len(spots) == 64
 cube_cell = open_slot()
 who = by_id[game.current_turn]
@@ -162,7 +165,7 @@ recreate(g.MODE_CUSTOM, custom)
 ui_wait(lambda: alice.custom == custom and alice.dims == (custom["size"],) * 3,
         "custom room settings")
 ui_wait(lambda: alice.is_3d and bob.is_3d, "a custom cube")
-assert None not in {alice.cell_at(alice.cell_rect(c).center)
+assert None not in {alice.cell_at(alice._cell_center(c))
                     for c in alice.board_cells()}
 ok(9, "custom room settings resize the board and switch it to a cube; "
       "every slot stays clickable")

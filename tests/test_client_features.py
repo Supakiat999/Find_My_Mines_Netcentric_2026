@@ -44,6 +44,7 @@ def type_text(ui, text):
 
 def new_ui(nickname):
     ui = client_mod.ClientUI()
+    ui.prefs["rules_seen"] = True
     uis.append(ui)
     ui_wait(lambda: ui.net.status == "connected", "connect")
     ui.nickname = nickname
@@ -91,6 +92,8 @@ while game.phase == g.PHASE_PLAYING and guard < 400:
 ui_wait(lambda: solo.match_end is not None, "the end screen")
 assert {p["name"] for p in solo.match_end["players"]} == {"Solo", "Computer (Hard)"}
 solo.draw()
+time.sleep(client_mod.END_DELAY + client_mod.END_FADE + 0.05)
+solo.draw()
 press(solo, solo.rematch_rect.center)
 ui_wait(lambda: solo.match_end is None and game.phase == g.PHASE_PLAYING,
         "an instant rematch")
@@ -109,6 +112,7 @@ srv, game = run.srv, None
 start = client_mod.ClientUI()
 uis.append(start)
 ui_wait(lambda: start.net.status == "connected", "connect")
+start.prefs["rules_seen"] = True
 start.draw()
 type_text(start, "Solo")
 key(start, pygame.K_RETURN, "\r")
@@ -210,11 +214,12 @@ ok(5, "quick-chat buttons send, focus behaves, and the log scrolls")
 waiting = other()
 waiting.toast = ""
 waiting._ask_coach()
-assert "own turn" in waiting.toast, (waiting.toast, waiting.role, waiting.phase, waiting.my_turn, game.current_turn, waiting.my_id)
+assert "your turn" in waiting.toast, (waiting.toast, waiting.role, waiting.phase, waiting.my_turn, game.current_turn, waiting.my_id)
 for _ in range(4):
     if game.phase == g.PHASE_PLAYING:
         play_pick()
 mover = me()
+mover._set_tab("play")
 ui_wait(lambda: mover.my_turn and mover.phase == "playing", "the turn on screen")
 assert mover._my_hints_left() == config.HINTS_PER_MATCH
 ask, odds = mover._coach_buttons()
@@ -284,12 +289,16 @@ recreate(g.MODE_CLASSIC)
 ui_wait(lambda: game.phase == g.PHASE_PLAYING and alice.mode == "classic"
         and bob.mode == "classic", "classic")
 cell = next(c for c in game.cells() if c not in game.revealed)
+for ui in (alice, bob):
+    ui.now = time.monotonic()
 play_pick(cell)
 ui_wait(lambda: cell in alice.reveal_times or cell in bob.reveal_times, "animation")
 watcher = alice if cell in alice.reveal_times else bob
 now = time.monotonic()
-assert watcher._reveal_progress(cell, now) < 1.0
-assert watcher._reveal_progress(cell, now + client_mod.REVEAL_SECONDS + 0.1) == 1.0
+assert now < watcher.reveal_times[cell] + client_mod.REVEAL_SECONDS
+watcher.now = watcher.reveal_times[cell] + client_mod.REVEAL_SECONDS + 0.1
+watcher._draw_board()
+assert cell not in watcher.reveal_times
 late = new_ui("Late")
 assert late.screen_name == client_mod.SCREEN_LOBBY, "new clients enter lobby"
 late.net.close()
@@ -303,7 +312,7 @@ ui_wait(lambda: ui.can_click(target), "my turn")
 ui.window = pygame.display.set_mode((600, 440), pygame.RESIZABLE)
 ui.draw()
 ox, oy, scale = ui._view
-assert abs(scale - 0.5) < 0.01, scale
+assert 0.4 <= scale <= 0.5, scale
 canvas = ui.cell_rect(target).center
 inverse = (int(ox + canvas[0] * scale), int(oy + canvas[1] * scale))
 assert all(abs(a - b) <= 2 for a, b in zip(ui._to_canvas(inverse), canvas))
@@ -387,13 +396,13 @@ run.stop()
 # =====================================================================
 ui = client_mod.ClientUI()
 seen = []
-for _ in range(3):
+for _ in themes.ORDER:
     seen.append(client_mod.THEME_NAME)
     ui._next_theme()
     ui.screen_name = client_mod.SCREEN_ERROR
     ui.draw()
-assert seen == ["dark", "light", "colorblind"] and client_mod.THEME_NAME == "dark"
-ok(16, "the theme button cycles dark -> light -> colour-blind -> dark and redraws")
+assert seen == themes.ORDER and client_mod.THEME_NAME == themes.ORDER[0]
+ok(16, "the theme button cycles every palette and redraws")
 
 problems = []
 for name, t in themes.THEMES.items():

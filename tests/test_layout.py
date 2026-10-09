@@ -172,7 +172,7 @@ def instrument_client(ui, rec):
 
     ui.text = text
     for name in ("_draw_settings", "_draw_end_overlay", "_draw_toast",
-                 "_draw_reconnect_overlay"):
+                 "_draw_reconnect_overlay", "_draw_rules", "_draw_theme_menu"):
         inner = getattr(ui, name)
 
         def wrapped(*a, _inner=inner, _name=name, **k):
@@ -187,6 +187,7 @@ def load(ui, state, clients, me=1, role="player"):
     ui.reveal_times.clear()
     ui._known = {}
     ui.screen_name = client_mod.SCREEN_GAME
+    ui.room_name_active = "Room_" + "Long" * 6
     ui.joined = True
     ui.my_id = me
     ui.role = role
@@ -204,6 +205,7 @@ def load(ui, state, clients, me=1, role="player"):
     ui.chat_input = ""
     ui.chat_focus = False
     ui.seconds_left = 7
+    ui.tab = "play"
 
 
 def client_scenarios(ui):
@@ -298,6 +300,7 @@ def client_scenarios(ui):
             ui.match_end = {"winner_id": None if draw else ids[winner],
                             "draw": draw, "players": players, "stats": stats,
                             "leaderboard": BOARD}
+            ui.match_end_time = time.monotonic() - 4
         return setup
     S.append(("end - you win", ended(0)))
     S.append(("end - you lost", ended(1)))
@@ -336,6 +339,7 @@ def client_scenarios(ui):
         ] * 5
         ui.chat_input = "a very long message being typed right now " * 3
         ui.chat_focus = True
+        ui.tab = "chat"
     S.append(("busy chat, long input", chat))
 
     def hall():
@@ -343,6 +347,7 @@ def client_scenarios(ui):
                                      reveal=8)
         state["leaderboard"] = BOARD
         load(ui, state, clients)
+        ui.tab = "ranks"
     S.append(("full hall of fame", hall))
 
     def coach(mode, custom=None, label=""):
@@ -389,7 +394,16 @@ def check_client(ui, rec, label):
                     problems.append("text overlap: %r x %r" % (ta, tb))
 
     if ui.screen_name == client_mod.SCREEN_GAME:
-        cells = [ui.cell_rect(c) for c in ui.board_cells()]
+        if ui.is_3d:
+            lay = ui._layout()
+            cells = []
+            for cell in ui.board_cells():
+                cx, cy = ui._cell_center(cell)
+                cells.append(pygame.Rect(int(cx - lay["tw"] / 2),
+                                         int(cy - lay["th"] / 2),
+                                         int(lay["tw"]), int(lay["th"])))
+        else:
+            cells = [ui.cell_rect(c) for c in ui.board_cells()]
         board = cells[0].unionall(cells[1:])
         centers = {c.center for c in cells}
         footer = pygame.Rect(24, H - 56, GW - 48, 44)
@@ -397,10 +411,16 @@ def check_client(ui, rec, label):
             problems.append("board off-window: %s" % (tuple(board),))
         if board.bottom > footer.top - 90:
             problems.append("board too low - no room for the status text")
-        buttons = [ui.sound_rect, ui.theme_rect, ui.leave_rect]
-        buttons += list(ui._coach_buttons())
-        buttons += ui._chat_rects()[1]
-        cards = ui.cards
+        buttons = [ui.sound_rect, ui.theme_rect, ui.leave_rect, ui.rules_rect]
+        if ui.tab == "play":
+            buttons += list(ui._coach_buttons())
+            cards = {name: card for name, card in ui.cards.items()
+                     if name in ("opponent", "coach", "tips")}
+        elif ui.tab == "chat":
+            buttons += ui._chat_rects()[1]
+            cards = {"chat": ui.cards["chat"]}
+        else:
+            cards = {name: ui.cards[name] for name in ("ranks", "online")}
         for r, t in by_layer.get(0, []):
             # a slot's own label (its number, the coach's odds, the player
             # marker on a bomb) is fine; text spread over the board is not

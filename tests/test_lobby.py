@@ -30,6 +30,7 @@ ui.nickname = "Ada"
 ui._handle({"type": protocol.WELCOME, "client_id": 1, "token": "t",
             "role": "lobby", "room_id": None, "message": "Welcome"})
 assert ui.screen_name == client.SCREEN_LOBBY
+assert not ui.rules_open
 assert ui.net.sent[-1][0] == protocol.LIST_ROOMS
 ui.rooms = [{"id": "r1", "name": "Test", "mode": "classic",
              "mode_label": "Classic", "ranked": True, "rated": True,
@@ -58,6 +59,8 @@ ui.hint = {"cell": (0, 0)}
 ui._handle({"type": protocol.WELCOME, "client_id": 1, "role": "player",
             "room_id": "r1", "dims": [6, 6], "message": "Joined"})
 assert ui.screen_name == client.SCREEN_GAME and ui.room_id == "r1"
+assert ui.rules_open
+ui._close_rules()
 ui._handle({"type": protocol.CHAT_MSG, "room_id": "old", "text": "stale"})
 assert ui.chat_lines == []
 ui.state = {"phase": "playing", "ranked": True, "board": [[None]], "dims": [1, 1]}
@@ -68,6 +71,7 @@ ui._on_game_event(event(ui.leave_rect.center))
 assert ui.net.sent[-1] == (protocol.LEAVE_ROOM, {"room_id": "r1"})
 ui._handle({"type": protocol.ROOM_LEFT, "room_id": "r1"})
 assert ui.screen_name == client.SCREEN_LOBBY and ui.room_id is None
+assert not ui.rules_open and not ui.particles and not ui.flag_times
 assert not ui.chat_lines and ui.hint is None and ui.state is None
 ui.net.close()
 pygame.quit()
