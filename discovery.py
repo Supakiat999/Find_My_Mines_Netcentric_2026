@@ -28,8 +28,26 @@ import time
 import config
 
 
+_ips_cache = (0.0, [])
+
+
 def local_ips():
-    """Non-loopback IPv4 addresses of this machine (best effort)."""
+    """Non-loopback IPv4 addresses of this machine (best effort).
+
+    Cached for a few seconds: the beacon asks twice a second and resolving the
+    host name can be slow on some machines.  A few seconds is still quick
+    enough to follow a network change.
+    """
+    global _ips_cache
+    stamp, cached = _ips_cache
+    if time.time() - stamp < 5:
+        return list(cached)
+    found = _find_local_ips()
+    _ips_cache = (time.time(), found)
+    return list(found)
+
+
+def _find_local_ips():
     found = []
 
     def add(ip):

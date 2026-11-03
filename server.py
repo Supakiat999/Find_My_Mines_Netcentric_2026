@@ -203,8 +203,9 @@ class Server:
             "<p>You reached the Find My Mines server at "
             "<b>%s:%d</b>.</p>"
             "<p>Your address here is <b>%s</b>.</p>"
-            "<p style=\"color:#8a98af\">Now set SERVER_HOST in config.py to "
-            "%s and run <b>python client.py</b>.</p>"
+            "<p style=\"color:#8a98af\">Now run <b>python client.py</b> - it "
+            "finds this server by itself. If it cannot, run "
+            "<b>python client.py %s</b>.</p>"
             % (self.lan_ip, config.SERVER_PORT, seen_by, self.lan_ip)
         ).encode("utf-8")
         crlf = "\r\n"
