@@ -102,10 +102,25 @@ def parse_beacon(data, source_ip):
 # ----------------------------------------------------------------------
 # server side
 # ----------------------------------------------------------------------
-def send_beacon(payload):
-    """Send one beacon out of every interface, plus loopback."""
+def _announce_from(bind_host):
+    """Which local addresses to announce from: only ones the server listens on.
+
+    0.0.0.0 means every interface (and loopback).  A specific BIND_HOST means
+    just that address; announcing others would send players somewhere the
+    server is not listening.  Returns (include_loopback, [interface IPs]).
+    """
+    if bind_host in ("", "0.0.0.0"):
+        return True, local_ips()
+    if bind_host.startswith("127."):
+        return True, []
+    return False, [bind_host]
+
+
+def send_beacon(payload, bind_host="0.0.0.0"):
+    """Send one beacon out of every address the server listens on."""
     port = config.DISCOVERY_PORT
-    for ip in [None] + local_ips():
+    loopback, ips = _announce_from(bind_host)
+    for ip in ([None] if loopback else []) + ips:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -125,11 +140,12 @@ def send_beacon(payload):
 class Beacon:
     """Background thread that keeps announcing the server."""
 
-    def __init__(self, info_fn, port):
+    def __init__(self, info_fn, port, bind_host="0.0.0.0"):
         """info_fn() -> (rooms, open_rooms); called from the beacon thread,
         so it must only read a ready-made snapshot."""
         self.info_fn = info_fn
         self.port = port
+        self.bind_host = bind_host
         self.name = socket.gethostname()[:24]
         self.sid = secrets.token_hex(4)
         self._stop = threading.Event()
@@ -146,7 +162,7 @@ class Beacon:
             try:
                 rooms, open_rooms = self.info_fn()
                 send_beacon(make_beacon(self.sid, self.port, self.name,
-                                        rooms, open_rooms))
+                                        rooms, open_rooms), self.bind_host)
             except Exception:
                 pass
             self._stop.wait(config.DISCOVERY_INTERVAL_S)

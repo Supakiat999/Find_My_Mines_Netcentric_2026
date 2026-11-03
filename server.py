@@ -146,7 +146,8 @@ class Server:
                  % (config.BIND_HOST, config.SERVER_PORT, self.lan_ip))
         if config.DISCOVERY:
             self._beacon = discovery.Beacon(lambda: self._beacon_info,
-                                            config.SERVER_PORT)
+                                            config.SERVER_PORT,
+                                            config.BIND_HOST)
             self._beacon.start()
             self.say("Announcing on the network (UDP %d): players on this "
                      "network find the game by themselves" % config.DISCOVERY_PORT)

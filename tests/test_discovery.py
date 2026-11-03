@@ -58,7 +58,13 @@ ui.nickname = "Ada"
 ui.net.send(protocol.JOIN, nickname="Ada")
 wait(lambda: ui.screen_name == "lobby", "lobby after discovery", pump=[ui])
 ui.draw()
-assert len(discovery.scan(1.0)) == 1       # heard on loopback AND LAN, counted once
+seen = discovery.scan(1.0)
+assert len(seen) == 1                       # heard on loopback AND LAN, counted once
+# helpers bind the server to 127.0.0.1, so it must announce only that address
+assert seen[0]["host"] == "127.0.0.1", seen
+assert discovery._announce_from("0.0.0.0")[0] is True
+assert discovery._announce_from("127.0.0.1") == (True, [])
+assert discovery._announce_from("192.168.1.9") == (False, ["192.168.1.9"])
 ok("2", "one server found: connects by itself and reaches the room lobby")
 
 # 3. the beacon reports the lobby: rooms and joinable rooms ---------------
