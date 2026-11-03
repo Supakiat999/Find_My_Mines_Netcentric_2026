@@ -20,17 +20,9 @@ if errorlevel 1 (
     if errorlevel 1 goto nopygame
 )
 
-echo    Type the server address the host gave you,
-echo    or just press Enter to use the one saved in config.py.
+echo    Looking for a game on your network...
 echo.
-set "ADDR="
-set /p ADDR=   Server address:
-echo.
-if "%ADDR%"=="" (
-    %PY% client.py
-) else (
-    %PY% client.py %ADDR%
-)
+%PY% client.py %*
 goto end
 
 :nopython

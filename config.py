@@ -15,15 +15,26 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 DATABASE_URL = os.environ.get("DATABASE_URL") or None
 
 # --- Network -----------------------------------------------------------
-# Address the client dials.  Use "127.0.0.1" when the server runs on the
-# same computer, or the LAN IP of the server machine (e.g. "192.168.1.42").
-# SERVER_HOST = "172.20.10.2"
-SERVER_HOST = "127.0.0.1"
+# Address the client dials.  "auto" (the default) finds a server on the same
+# network by itself, see "Auto-discovery" below.  To skip that, give an address:
+# "127.0.0.1" for the same computer, or the LAN IP of the server machine
+# (e.g. "192.168.1.42").  `python client.py <ip>` does the same without
+# editing this file.
+SERVER_HOST = "auto"
 
 # Address the server binds to.  "0.0.0.0" accepts connections from any
 # network interface, which is what lets the second laptop reach us.
 BIND_HOST = "0.0.0.0"
 SERVER_PORT = 55550
+
+# --- Auto-discovery ----------------------------------------------------
+# The server announces itself with a small UDP broadcast; a client started
+# with SERVER_HOST = "auto" listens for it and connects to what it hears.
+DISCOVERY = True                     # False: the server stays silent
+DISCOVERY_PORT = 55551               # UDP; open it in the firewall if needed
+DISCOVERY_MAGIC = "find-my-mines-v1"
+DISCOVERY_INTERVAL_S = 0.5           # how often the server announces itself
+DISCOVERY_LISTEN_S = 2.0             # how long a client listens before giving up
 
 # --- Game rules --------------------------------------------------------
 GRID_SIZE = 6

@@ -91,44 +91,49 @@ and read the **IPv4 Address** under your Wi-Fi adapter.
 > Your IP is handed out by the router and **changes** when you switch networks
 > or reconnect. Always re-check it on the day, do not reuse an old one.
 
-### Step 2 — On the server computer, open the firewall
+### Step 2 — On the server computer, open the firewall (TCP 55550, UDP 55551)
 
 Windows shows a prompt the first time you run the server — tick **Private
 networks** and click **Allow**. If you missed it, open PowerShell **as
 Administrator** and run:
 
 ```bash
-netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow protocol=TCP localport=55555
+netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow protocol=TCP localport=55550
+netsh advfirewall firewall add rule name="FindMyMines discovery" dir=in action=allow protocol=UDP localport=55551
 ```
 
-Without this, other computers cannot reach the server even on the same Wi-Fi.
+Without the first rule, other computers cannot reach the server even on the same
+Wi-Fi. The second one lets them find it automatically (step 3).
 
-### Step 3 — On the other computer, point the client at the server
-
-Either edit `config.py`:
-
-```python
-SERVER_HOST = "192.168.1.14"
-```
-
-...or skip the file entirely and pass the address when you start the client:
-
-```bash
-python client.py 192.168.1.14
-```
-
-Both do the same thing on this branch. The argument is the safer one when the
-server has just moved, because there is no file to forget to save - but note it
-only exists here on `enhanced`, not on `main`.
-See [CHANGELOG.md](CHANGELOG.md) for what separates the two.
-
-### Step 4 — Play
+### Step 3 — On the other computer, just open the game
 
 ```bash
 python client.py
 ```
 
-Type a nickname, press Enter. The server computer can run a client too — the
+Nothing to type or edit. The server announces itself on the network (UDP), and
+the client listens for about two seconds on start-up:
+
+- **One server found:** it connects by itself. Type a nickname, press Enter, and
+  you are in the room lobby.
+- **Several found:** a list shows each one with its room count. Press its number.
+  F5 listens again.
+- **None found:** it falls back to `127.0.0.1` and shows the usual error with
+  the hints below. Some networks (campus Wi-Fi) block broadcast; use a phone
+  hotspot, or give the address by hand:
+
+  ```bash
+  python client.py 192.168.1.14
+  ```
+
+  (or set `SERVER_HOST = "192.168.1.14"` in `config.py`). Any address given this
+  way skips the search.
+
+The PLAY launchers do exactly this; they no longer ask for an address.
+
+### Step 4 — Play
+
+Type a nickname, press Enter, then create or join a room. The server computer can run a client too — the
 assignment expects exactly that: one computer runs the server *and* a client,
 the other runs only a client.
 
@@ -138,10 +143,9 @@ the other runs only a client.
 
 > 1. Install Python 3, then run `pip install -r requirements.txt`
 > 2. Download the code: https://github.com/Supakiat999/Find_My_Mines_Netcentric_2026
-> 3. Run `python client.py <my IP>` — type a nickname, press Enter
->    (or set `SERVER_HOST` in `config.py` and just run `python client.py`)
-> 5. You must be on the same Wi-Fi as me. If it will not connect, join my phone
->    hotspot and I will send the new IP.
+> 3. Run `python client.py` (or double-click PLAY) — it finds my game by itself
+> 4. You must be on the same Wi-Fi as me. If it will not find it, join my phone
+>    hotspot, or run `python client.py <my IP>`.
 
 ---
 
@@ -151,11 +155,11 @@ Before anyone edits a file, open a **browser** on the other laptop (or on your
 phone) and go to the server's address:
 
 ```
-http://172.20.10.2:55555
+http://172.20.10.2:55550
 ```
 
 - **You see "Connection works"** — the network and the firewall are fine. Any
-  remaining problem is the address in that person's `config.py`.
+  remaining problem is discovery or the address that person typed.
 - **It times out or refuses** — nothing is reaching the server. Fix that first;
   the game cannot work until this page loads.
 
@@ -175,9 +179,10 @@ The client shows what it tried and why. Work down this list:
 |---|---|---|
 | "Cannot reach the server" straight away | Server not running, or wrong IP | Start `server.py`; re-check the IP in its window header |
 | It hangs, then fails | Firewall is dropping the connection | Run the `netsh` rule from step 2 on the **server** computer |
-| Works on your own machine, not from theirs | `SERVER_HOST` is still `127.0.0.1` on their copy | Set it to the server's LAN IP on **their** computer |
+| Works on your own machine, not from theirs | Their `SERVER_HOST` is a fixed address (not `"auto"`), or UDP 55551 is blocked | Set `SERVER_HOST = "auto"`, or run `python client.py <server IP>` |
+| "No game found nearby" | Broadcast is blocked (client-isolation Wi-Fi) or the UDP firewall rule is missing | Add the UDP rule from step 2, use a hotspot, or pass the IP |
 | Correct IP, still nothing | The Wi-Fi blocks device-to-device traffic | Use a **phone hotspot** and connect both laptops to it |
-| Worked yesterday, not today | The router gave the server a new IP | Re-read the IP and update `config.py` |
+| Worked yesterday, not today | The router gave the server a new IP | With `"auto"` nothing to do (press R); with a fixed address, re-read the IP |
 
 Quick test from the other computer — if this fails, it is the network, not the
 game:

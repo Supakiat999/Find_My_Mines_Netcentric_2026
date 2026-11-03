@@ -82,8 +82,17 @@ return s.getsockname()[0]      # it just asks the routing table
 route it *would* use, which reveals which local IP faces the network. That is why
 the server window can print its own LAN address for you.
 
-**The assignment requirement lands here:** players never type an IP or port. The
-address is a constant in the source, resolved before any socket is opened.
+**The assignment requirement lands here:** players never type an IP or port. By
+default (`SERVER_HOST = "auto"`) the client does not even read an address: the
+server announces itself with a small UDP broadcast every half second
+(`discovery.py`, port 55551, JSON with the TCP port, host name, room count and
+joinable-room count) and the client listens for about two seconds. It connects
+to the *source address of the datagram*, never an address written inside it, so
+the address used is one that provably reaches the server. A server heard on
+several interfaces is counted once, using a per-run id in the beacon. One server
+means automatic connection; several means a numbered pick; none falls back to
+`127.0.0.1`. An explicit `SERVER_HOST` or `python client.py <ip>` skips the
+search. Rooms are not in the beacon: the lobby still lists them over TCP.
 
 ---
 

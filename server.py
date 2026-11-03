@@ -30,6 +30,7 @@ import pygame
 import ai
 import botbrain
 import config
+import discovery
 import game as game_rules
 import protocol
 import stats as stats_mod
@@ -100,6 +101,8 @@ class Server:
         self.lan_ip = protocol.local_ip()
         self._ip_checked_at = 0.0
         self._offline = False
+        self._beacon = None
+        self._beacon_info = (0, 0)        # (rooms, joinable rooms) for discovery
 
     def current_ip(self):
         """Our LAN address, re-checked as we go.
@@ -141,6 +144,13 @@ class Server:
         threading.Thread(target=self._accept_loop, daemon=True).start()
         self.say("Listening on %s:%d  (LAN %s)"
                  % (config.BIND_HOST, config.SERVER_PORT, self.lan_ip))
+        if config.DISCOVERY:
+            self._beacon = discovery.Beacon(lambda: self._beacon_info,
+                                            config.SERVER_PORT,
+                                            config.BIND_HOST)
+            self._beacon.start()
+            self.say("Announcing on the network (UDP %d): players on this "
+                     "network find the game by themselves" % config.DISCOVERY_PORT)
 
     def _accept_loop(self):
         while self.running:
@@ -194,8 +204,9 @@ class Server:
             "<p>You reached the Find My Mines server at "
             "<b>%s:%d</b>.</p>"
             "<p>Your address here is <b>%s</b>.</p>"
-            "<p style=\"color:#8a98af\">Now set SERVER_HOST in config.py to "
-            "%s and run <b>python client.py</b>.</p>"
+            "<p style=\"color:#8a98af\">Now run <b>python client.py</b> - it "
+            "finds this server by itself. If it cannot, run "
+            "<b>python client.py %s</b>.</p>"
             % (self.lan_ip, config.SERVER_PORT, seen_by, self.lan_ip)
         ).encode("utf-8")
         crlf = "\r\n"
@@ -313,6 +324,8 @@ class Server:
 
     def push_rooms(self, force=False):
         rooms = [room.summary(self._joined_clients()) for room in self.rooms.values()]
+        # The beacon thread reads this ready-made tuple, never self.rooms.
+        self._beacon_info = (len(rooms), sum(r["joinable"] for r in rooms))
         if not force and rooms == self._last_rooms:
             return
         self._last_rooms = rooms
@@ -509,6 +522,8 @@ class Server:
     # ------------------------------------------------------------------
     def shutdown(self):
         self.running = False
+        if self._beacon is not None:
+            self._beacon.stop()
         if isinstance(self.board, stats_mod.DatabaseLeaderboard):
             if any(room.pending_match is not None for room in self.rooms.values()):
                 self.say("WARNING: closing with a pending result; check database "

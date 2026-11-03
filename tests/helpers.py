@@ -23,7 +23,8 @@ import config                                    # noqa: E402
 config.STATS_FILE = None
 config.PREFS_FILE = None
 config.DATABASE_URL = None
-config.SERVER_HOST = "127.0.0.1"
+config.SERVER_HOST = "127.0.0.1"           # explicit, so clients never search
+config.DISCOVERY = False                    # and test servers stay silent
 config.BIND_HOST = "127.0.0.1"
 
 import protocol                                  # noqa: E402

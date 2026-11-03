@@ -43,6 +43,7 @@ import pygame
 from pygame import gfxdraw
 
 import config
+import discovery
 import game as game_rules
 import protocol
 import themes
@@ -279,15 +280,26 @@ def flatten_board(board, dims):
 class NetworkClient:
     """One TCP connection to the server, read on its own thread."""
 
-    def __init__(self):
+    def __init__(self, host=None, port=None, searching=False):
         self.inbox = queue.Queue()
         self.sock = None
-        self.status = "connecting"   # connecting | connected | failed | lost
+        # searching: still listening for a server, nothing dialled yet
+        self.status = "searching" if searching else "connecting"
         self.error = ""
+        # No target given means "whatever config.py says right now".
+        self._host, self._port = host, port
+
+    @property
+    def host(self):
+        return self._host if self._host is not None else config.SERVER_HOST
+
+    @property
+    def port(self):
+        return self._port if self._port is not None else config.SERVER_PORT
 
     @property
     def address(self):
-        return "%s:%d" % (config.SERVER_HOST, config.SERVER_PORT)
+        return "%s:%d" % (self.host, self.port)
 
     def connect_async(self):
         self.status = "connecting"
@@ -296,8 +308,7 @@ class NetworkClient:
 
     def _run(self):
         try:
-            self.sock = socket.create_connection(
-                (config.SERVER_HOST, config.SERVER_PORT), timeout=5)
+            self.sock = socket.create_connection((self.host, self.port), timeout=5)
             self.sock.settimeout(None)          # back to blocking for recv
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError as exc:
@@ -351,8 +362,19 @@ class ClientUI:
         self.sound = SoundBank(muted=bool(self.prefs.get("muted", False)))
         self.fx_on = bool(self.prefs.get("animations", True))
 
-        self.net = NetworkClient()
-        self.net.connect_async()
+        # Auto mode: find the server on the network instead of reading an
+        # address.  Any explicit SERVER_HOST (config or command line) skips it.
+        self.auto = config.SERVER_HOST == "auto"
+        self.servers = []                    # what the last scan heard
+        self.target = None                   # (host, port) chosen by discovery
+        self.found_by_scan = False
+        self._scan_done = False
+        self.net = None
+        if self.auto:
+            self._start_search()
+        else:
+            self.net = NetworkClient()
+            self.net.connect_async()
 
         self.screen_name = SCREEN_NICKNAME
         self.nickname = ""
@@ -431,6 +453,49 @@ class ClientUI:
         self.rules_rect = pygame.Rect(self.sound_rect.x - 8 - 84, 14, 84, 32)
         self.rules_close = pygame.Rect(0, 0, 160, 44)
         self.leave_rect = pygame.Rect(24, 56, 90, 32)
+
+    # ------------------------------------------------------------------
+    # finding the server
+    # ------------------------------------------------------------------
+    def _new_net(self):
+        """A fresh connection to the same place as before."""
+        if self.target is not None:
+            return NetworkClient(*self.target)
+        return NetworkClient()
+
+    def _start_search(self):
+        """Forget the old target and listen for servers on the network."""
+        if self.net is not None:
+            self.net.close()
+        self.target, self.found_by_scan = None, False
+        self.servers, self._scan_done = [], False
+        self.net = NetworkClient(searching=True)
+        threading.Thread(target=self._scan, args=(self.net,), daemon=True).start()
+
+    def _scan(self, net):
+        servers = discovery.scan()
+        if self.net is net and net.status == "searching":
+            self.servers = servers
+            self._scan_done = True
+
+    def _poll_search(self):
+        """Main thread: act on a finished scan."""
+        if self.net.status != "searching" or not self._scan_done:
+            return
+        self._scan_done = False
+        if len(self.servers) == 1:                   # exactly one: just go
+            self._connect_to(self.servers[0])
+        elif not self.servers:                       # nothing heard: old default
+            self.net = NetworkClient("127.0.0.1", config.SERVER_PORT)
+            self.target = ("127.0.0.1", config.SERVER_PORT)
+            self.net.connect_async()
+        # several: leave the picker on screen, the player chooses
+
+    def _connect_to(self, server):
+        self.target = (server["host"], server["port"])
+        self.found_by_scan = True
+        self.net = NetworkClient(*self.target)
+        self.net.connect_async()
 
     # ------------------------------------------------------------------
     # small helpers
@@ -727,7 +792,7 @@ class ClientUI:
                 self.screen_name = SCREEN_ERROR
                 return
             if now >= self.next_retry:
-                self.net = NetworkClient()
+                self.net = self._new_net()
                 self.net.connect_async()
                 self.rejoin_pending = True
                 self.next_retry = now + 2.0
@@ -743,6 +808,7 @@ class ClientUI:
     # incoming messages
     # ------------------------------------------------------------------
     def pump_network(self):
+        self._poll_search()
         self._maintain_connection()
         if (self.net.status in ("failed", "lost") and not self.joined
                 and self.screen_name != SCREEN_ERROR):
@@ -1223,9 +1289,12 @@ class ClientUI:
                 self._on_game_event(event)
         elif self.screen_name == SCREEN_ERROR:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                self.net.close()
-                self.net = NetworkClient()
-                self.net.connect_async()
+                if self.auto:
+                    self._start_search()         # the server may have moved
+                else:
+                    self.net.close()
+                    self.net = NetworkClient()
+                    self.net.connect_async()
                 self.joined = False
                 self.reconnect_until = None
                 self.screen_name = SCREEN_NICKNAME
@@ -1233,6 +1302,16 @@ class ClientUI:
     def _on_nickname_event(self, event):
         if event.type != pygame.KEYDOWN:
             return
+        if self.net.status == "searching" and self._picking():
+            # several servers heard: 1-9 picks one, F5 listens again
+            if pygame.K_1 <= event.key <= pygame.K_9:
+                index = event.key - pygame.K_1
+                if index < len(self.servers):
+                    self._connect_to(self.servers[index])
+                return
+            if event.key == pygame.K_F5:
+                self._start_search()
+                return
         if event.key == pygame.K_RETURN:
             if self.nickname.strip() and self.net.status == "connected":
                 self.nickname = self.nickname.strip()
@@ -1870,13 +1949,38 @@ class ClientUI:
                       else "Pick a nickname to start",
                       (mid, 576), self.f_body, GOOD if ready else MUTED,
                       center=True)
+        elif self.net.status == "searching":
+            self._draw_server_picker(mid)
         else:
             self.text("Connecting to the server...", (mid, 576), self.f_body,
                       WARN, center=True)
 
-        # proof for the demo that the address comes from the source, not the user
-        self.text("server %s  (set in config.py)" % self.net.address,
-                  (mid, 640), self.f_small, MUTED, center=True)
+        if self.net.status != "searching":
+            how = "found automatically" if self.found_by_scan else (
+                "set in config.py" if not self.auto else "no game found nearby")
+            self.text("server %s  (%s)" % (self.net.address, how),
+                      (mid, 640), self.f_small, MUTED, center=True)
+
+    def _picking(self):
+        """True while several servers answered and the player must choose."""
+        return len(self.servers) > 1
+
+    def _draw_server_picker(self, mid):
+        """While listening: a status line.  If several servers answered: a list."""
+        if not self._picking():
+            self.text("Looking for a game on your network...", (mid, 576),
+                      self.f_body, WARN, center=True)
+            return
+        self.text("Several games found - press a number:", (mid, 560),
+                  self.f_body, GOOD, center=True)
+        for i, server in enumerate(self.servers[:5]):
+            label = "%d.  %s  %s  -  %d room%s, %d open" % (
+                i + 1, server["name"] or "server", server["host"],
+                server["rooms"], "" if server["rooms"] == 1 else "s",
+                server["open"])
+            self.text(label, (mid, 592 + i * 24), self.f_small, TEXT, center=True)
+        self.text("F5 to look again", (mid, 592 + 5 * 24 + 4), self.f_small,
+                  MUTED, center=True)
 
     def _room_rects(self, index):
         y = 148 + index * 82
@@ -2054,7 +2158,9 @@ class ClientUI:
             y += 24
         y += 30
         for hint in ("Is server.py running on that computer?",
-                     "Is SERVER_HOST in config.py the server's current IP?",
+                     ("Is this computer on the same network as the server? (R searches again)"
+                      if self.auto else
+                      "Is SERVER_HOST in config.py the server's current IP?"),
                      "Is Python allowed through the firewall on the server?",
                      "Are both computers on the same Wi-Fi? (a phone hotspot works)"):
             self.text("- " + hint, (mid - 260, y), self.f_small, MUTED)
@@ -3036,10 +3142,10 @@ class ClientUI:
 def main():
     """Start the client.
 
-    The address normally comes from config.py, so nobody has to type one.
-    An optional argument overrides it - handy when the server has moved to
-    a new address and editing the file would be one more thing to get
-    wrong:  python client.py 192.168.1.14
+    Normally nobody types an address: the client finds the server on the
+    network by itself (SERVER_HOST = "auto" in config.py).  An optional
+    argument skips that and dials a specific machine:
+    python client.py 192.168.1.14 [port]
     """
     args = [a for a in sys.argv[1:] if a.strip()]
     if args:
