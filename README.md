@@ -168,7 +168,8 @@ off from your opponent.
 
 | File | Purpose |
 |---|---|
-| `config.py` | Server address, port, and game constants. The **only** file you edit to connect a second computer. |
+| `config.py` | Server address (`"auto"` by default), ports, and game constants. Nothing to edit to connect a second computer on the same network. |
+| `discovery.py` | UDP auto-discovery: the server's beacon and the client's scan. |
 | `protocol.py` | Newline-delimited JSON framing over TCP, plus a reader that reassembles messages split across packets. |
 | `game.py` | Pure game rules — bomb placement, neighbour counts, turn order, scoring. No sockets, no GUI. |
 | `server.py` | TCP accept loop, one thread per client, the authoritative turn clock, and the pygame admin console. |
@@ -256,25 +257,24 @@ python client.py
    PowerShell:
 
    ```powershell
-   netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow protocol=TCP localport=55555
+   netsh advfirewall firewall add rule name="FindMyMines" dir=in action=allow protocol=TCP localport=55550
+   netsh advfirewall firewall add rule name="FindMyMines discovery" dir=in action=allow protocol=UDP localport=55551
    ```
 
 **On the client computer:**
 
-3. Edit one line in `config.py`:
-
-   ```python
-   SERVER_HOST = "192.168.1.14"   # the server computer's IPv4 address
-   ```
-
-4. Start the client:
+3. Start the client — that is all:
 
    ```bash
    python client.py
    ```
 
-Per the assignment, players never type an IP or port in the game itself — the
-address lives in the source.
+   The server announces itself over UDP on the local network and the client
+   finds it. With one server it connects by itself; with several it shows a
+   list to pick from. If the network blocks broadcast, pass the address instead:
+   `python client.py 192.168.1.14` (or set `SERVER_HOST` in `config.py`).
+
+Per the assignment, players never type an IP or port in the game itself.
 
 **Troubleshooting**
 

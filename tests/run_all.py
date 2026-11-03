@@ -25,6 +25,7 @@ SUITES = [
     ("database", "test_database.py", "PostgreSQL persistence (skips without TEST_DATABASE_URL)"),
     ("database_server", "test_database_server.py", "server commit, retry and restart over PostgreSQL"),
     ("ai", "test_ai.py", "probability engine: accuracy, strength, speed"),
+    ("discovery", "test_discovery.py", "UDP auto-discovery: one server, several, explicit address, reconnect"),
     ("network", "test_network.py", "the server over real TCP, all modes"),
     ("server_features", "test_server_features.py",
      "chat, coach, computer opponent, leaderboard, reconnect"),

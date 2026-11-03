@@ -28,17 +28,9 @@ if ! "$PY" -c "import pygame, dotenv, psycopg" >/dev/null 2>&1; then
     fi
 fi
 
-echo "   Type the server address the host gave you,"
-echo "   or just press Enter to use the one saved in config.py."
+echo "   Looking for a game on your network..."
 echo
-read -r -p "   Server address: " ADDR
-echo
-
-if [ -z "$ADDR" ]; then
-    "$PY" client.py
-else
-    "$PY" client.py "$ADDR"
-fi
+"$PY" client.py "$@"
 
 echo
 read -n 1 -s -r -p "   Press any key to close..."

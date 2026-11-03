@@ -5,6 +5,19 @@ between the two branches actually is.
 
 ---
 
+## Auto-discovery (`feat/conn`)
+
+The client no longer needs an address. `SERVER_HOST` defaults to `"auto"`: the
+server broadcasts a small UDP beacon (port 55551) and the client connects to
+what it hears — automatically for one server, from a numbered list for several,
+and to `127.0.0.1` when nothing answers. Reconnecting after a dropped link goes
+back to the same discovered server. An explicit address (config or command line)
+still wins and skips the search. The PLAY launchers no longer ask for an
+address. Rooms are untouched: discovery only finds the server, the room lobby
+works as before. Networks that block broadcast fall back to the manual address.
+
+---
+
 ## The branches
 
 | Branch | Tag | What it is |
