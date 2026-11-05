@@ -1,12 +1,13 @@
 SHELL := /bin/bash
 
-REGION        ?= ap-southeast-1
+TF            ?= terraform
+AWS           ?= aws
+REGION        ?= $(shell $(TF) output -raw aws_region 2>/dev/null || echo ap-southeast-2)
 PROFILE       ?= agent-toolkit
 PLATFORM      ?= linux/amd64
 TAG           ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
 INSTALL_TORCH ?= false
-TF            ?= terraform
-AWS           ?= aws
+ROOT          ?= $(shell git rev-parse --show-toplevel)
 
 .PHONY: help init fmt validate plan ecr build push apply bootstrap ship logs ssh db-init destroy output
 
@@ -46,8 +47,9 @@ ecr: init
 build:
 	@IMAGE="$$($(TF) output -raw ecr_repository_url)"; \
 	docker buildx build --platform $(PLATFORM) \
+		-f "$(ROOT)/Dockerfile" \
 		--build-arg INSTALL_TORCH=$(INSTALL_TORCH) \
-		-t "$$IMAGE:$(TAG)" --load .
+		-t "$$IMAGE:$(TAG)" --load "$(ROOT)"
 
 push: build
 	@IMAGE="$$($(TF) output -raw ecr_repository_url)"; \
