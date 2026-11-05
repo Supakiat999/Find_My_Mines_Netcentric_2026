@@ -1,0 +1,98 @@
+#!/bin/bash
+# Rendered by infra/terraform/compute.tf. Runs once from cloud-init and is
+# re-runnable from /usr/local/bin/find-my-mines-bootstrap (`make bootstrap`).
+set -euo pipefail
+exec > >(tee -a /var/log/find-my-mines-bootstrap.log) 2>&1
+
+echo "[bootstrap] start $(date -Is)"
+
+# Install this script first, so a failed first boot can be fixed with
+# `make bootstrap` instead of recreating the instance.
+for source in /var/lib/cloud/instance/user-data.txt /var/lib/cloud/instances/*/user-data.txt; do
+  if [ -f "$source" ]; then
+    install -m 0755 "$source" /usr/local/bin/find-my-mines-bootstrap
+    break
+  fi
+done
+
+REGION="${aws_region}"
+
+dnf install -y docker jq curl
+systemctl enable --now docker
+usermod -aG docker ec2-user || true
+
+if ! command -v aws >/dev/null 2>&1; then
+  dnf install -y awscli-2 >/dev/null 2>&1 || dnf install -y awscli
+fi
+
+COMPOSE_VERSION="v2.39.2"
+case "$(uname -m)" in
+  x86_64) COMPOSE_ARCH=x86_64 ;;
+  aarch64) COMPOSE_ARCH=aarch64 ;;
+  *) echo "[bootstrap] unsupported architecture $(uname -m)"; exit 1 ;;
+esac
+
+if ! docker compose version >/dev/null 2>&1; then
+  mkdir -p /usr/libexec/docker/cli-plugins
+  curl -fsSL "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-linux-$COMPOSE_ARCH" \
+    -o /usr/libexec/docker/cli-plugins/docker-compose
+  chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+fi
+
+install -d -m 0755 /opt/find-my-mines
+cd /opt/find-my-mines
+
+base64 -d > compose.aws.yaml <<'COMPOSE_YAML'
+${compose_file}
+COMPOSE_YAML
+
+IMAGE_URI=$(aws ssm get-parameter --region "$REGION" \
+  --name "${image_param}" --query 'Parameter.Value' --output text)
+DB_URL=$(aws ssm get-parameter --region "$REGION" \
+  --name "${database_param}" --with-decryption --query 'Parameter.Value' --output text)
+MASTER_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
+  --secret-id "${rds_secret_arn}" --query 'SecretString' --output text)
+
+DB_MASTER_USER=$(printf '%s' "$MASTER_JSON" | jq -r .username)
+DB_MASTER_PASSWORD=$(printf '%s' "$MASTER_JSON" | jq -r .password)
+ECR_REGISTRY=$(dirname "$IMAGE_URI")
+
+umask 077
+cat > .env <<ENV
+DATABASE_URL=$DB_URL
+IMAGE_URI=$IMAGE_URI
+AWS_REGION=$REGION
+LOG_GROUP=${log_group}
+ADVERTISE_HOST=${advertise_host}
+ENV
+
+cat > .env.init <<ENV
+DATABASE_URL=$DB_URL
+DB_HOST=${db_host}
+DB_NAME=${db_name}
+DB_MASTER_USER=$DB_MASTER_USER
+DB_MASTER_PASSWORD=$DB_MASTER_PASSWORD
+ENV
+chmod 600 .env .env.init
+
+aws ecr get-login-password --region "$REGION" \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+docker compose --env-file .env -f compose.aws.yaml pull game
+
+ready=false
+for attempt in 1 2 3 4 5; do
+  if docker compose --env-file .env -f compose.aws.yaml --profile init run --rm init-db; then
+    ready=true
+    break
+  fi
+  echo "[bootstrap] database init attempt $attempt failed; retrying in 15s"
+  sleep 15
+done
+if [ "$ready" != "true" ]; then
+  echo "[bootstrap] database init failed"
+  exit 1
+fi
+
+docker compose --env-file .env -f compose.aws.yaml up -d game
+
+echo "[bootstrap] done $(date -Is)"

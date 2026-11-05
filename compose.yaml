@@ -25,5 +25,38 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # Full local stack:  docker compose --profile game up -d --wait
+  # The default `docker compose up` above is still database-only.
+  game:
+    profiles: ["game"]
+    build:
+      context: .
+      args:
+        INSTALL_TORCH: "${INSTALL_TORCH:-false}"
+    image: find-my-mines:local
+    ports:
+      - "55550:55550"
+    environment:
+      DATABASE_URL: postgresql://runtime:${RUNTIME_PASSWORD}@postgres:5432/find_my_mines
+      ADVERTISE_HOST: "${ADVERTISE_HOST:-}"
+      DISCOVERY: "false"
+      STATS_FILE: /app/data/stats.json
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    volumes:
+      - game_stats:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python server.py' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
 volumes:
   postgres_data:
+  game_stats:

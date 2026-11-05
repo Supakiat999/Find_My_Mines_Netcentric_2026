@@ -11,6 +11,15 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
+
+def _env_flag(name, default):
+    """Read a boolean environment variable, keeping the code default when unset."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("", "0", "false", "no", "off")
+
+
 # PostgreSQL is opt-in; an empty DATABASE_URL preserves JSON persistence.
 DATABASE_URL = os.environ.get("DATABASE_URL") or None
 
@@ -23,14 +32,20 @@ DATABASE_URL = os.environ.get("DATABASE_URL") or None
 SERVER_HOST = "auto"
 
 # Address the server binds to.  "0.0.0.0" accepts connections from any
-# network interface, which is what lets the second laptop reach us.
-BIND_HOST = "0.0.0.0"
-SERVER_PORT = 55550
+# network interface, which is what lets the second laptop reach us.  Override
+# these for containers or managed hosts without editing this file.
+BIND_HOST = os.environ.get("BIND_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("SERVER_PORT") or "55550")
+
+# Address shown to players and in the browser reachability page. Leave it
+# unset to use the LAN address the server detects. Set this to the public
+# address when the server runs behind NAT or in a container.
+ADVERTISE_HOST = os.environ.get("ADVERTISE_HOST") or None
 
 # --- Auto-discovery ----------------------------------------------------
 # The server announces itself with a small UDP broadcast; a client started
 # with SERVER_HOST = "auto" listens for it and connects to what it hears.
-DISCOVERY = True                     # False: the server stays silent
+DISCOVERY = _env_flag("DISCOVERY", True)   # False: the server stays silent
 DISCOVERY_PORT = 55551               # UDP; open it in the firewall if needed
 DISCOVERY_MAGIC = "find-my-mines-v1"
 DISCOVERY_INTERVAL_S = 0.5           # how often the server announces itself
@@ -90,12 +105,12 @@ RECONNECT_GRACE = 30
 BOT_THINK_SECONDS = (0.7, 1.4)
 
 # Where the hall of fame is saved.  "auto" puts stats.json beside the game;
-# None keeps it in memory only (the tests do this).
-STATS_FILE = "auto"
+# an empty value keeps it in memory only (the tests do this).
+STATS_FILE = os.environ.get("STATS_FILE", "auto")
 
 # Where the game window remembers your theme and sound choice.  "auto" puts
-# client_prefs.json beside the game; None turns remembering off (tests do this).
-PREFS_FILE = "auto"
+# client_prefs.json beside the game; an empty value turns remembering off.
+PREFS_FILE = os.environ.get("PREFS_FILE", "auto")
 
 # --- Elo Rating System -------------------------------------------------
 ELO_STARTING = 1200                  # Default starting rating

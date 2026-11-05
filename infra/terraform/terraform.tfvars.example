@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is git-ignored.
+#
+# Region: the new AWS experience assigns one Region to the project. Confirm it
+# in AWS Settings > View all projects > Overview > Additional Info > Region.
+aws_region  = "ap-southeast-1"
+aws_profile = "agent-toolkit"
+
+# Replace this with your public IP /32:
+#   curl -s https://checkip.amazonaws.com
+ssh_cidrs = ["203.0.113.10/32"]
+
+# Everyone can reach the game port. Narrow this for a private demo.
+allowed_cidrs = ["0.0.0.0/0"]
+
+# Optional overrides
+# instance_type            = "t3.small"
+# db_instance_class        = "db.t4g.micro"
+# db_backup_retention_days = 7
+# db_skip_final_snapshot   = true
+# log_retention_days       = 14
