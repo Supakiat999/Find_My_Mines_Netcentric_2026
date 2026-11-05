@@ -447,6 +447,7 @@ class ClientUI:
         self.rules_at = 0.0
         self.cards = self._side_layout()
         self.rematch_rect = pygame.Rect(CX - 100, 601, 200, 52)
+        self.end_leave_rect = pygame.Rect(CX + 8, 601, 200, 52)
         self.theme_rect = pygame.Rect(GAME_W - 24 - 150, 14, 150, 32)
         self.ranked_rect = pygame.Rect(self.theme_rect.x - 8 - 96, 14, 96, 32)
         self.sound_rect = pygame.Rect(self.ranked_rect.x - 8 - 96, 14, 96, 32)
@@ -1479,10 +1480,11 @@ class ClientUI:
         if self.reconnecting:
             return
         if self.match_end is not None:
-            if (event.button == 1 and not self.voted_rematch
-                    and self._end_progress() > 0.5
-                    and self.rematch_rect.collidepoint(event.pos)):
-                if self.role == "player":
+            if event.button == 1 and self._end_progress() > 0.5:
+                if self.end_leave_rect.collidepoint(event.pos):
+                    self._send_game(protocol.LEAVE_ROOM)
+                elif (self.role == "player" and not self.voted_rematch
+                      and self.rematch_rect.collidepoint(event.pos)):
                     self._send_game(protocol.REMATCH)
                     self.voted_rematch = True
             return
@@ -3092,10 +3094,12 @@ class ClientUI:
             self.text("streak = most picks in a row that kept your turn",
                       (left, y + 4), self.f_small, MUTED)
 
-        self.rematch_rect = pygame.Rect(card.centerx - 100, card.bottom - 84, 200, 52)
+        self.rematch_rect = pygame.Rect(card.centerx - 208, card.bottom - 84, 200, 52)
+        self.end_leave_rect = pygame.Rect(card.centerx + 8, card.bottom - 84, 200, 52)
+        self._button(self.end_leave_rect, "LEAVE ROOM", small=False)
         if self.role != "player":
             self.text("Waiting for the players to decide on a rematch",
-                      self.rematch_rect.center, self.f_small, MUTED, center=True)
+                      (card.centerx, card.bottom - 110), self.f_small, MUTED, center=True)
             return
 
         votes = len((self.state or {}).get("rematch_votes", []))
