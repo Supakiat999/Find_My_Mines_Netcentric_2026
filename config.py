@@ -50,7 +50,7 @@ DISCOVERY = _env_flag("DISCOVERY", True)   # False: the server stays silent
 DISCOVERY_PORT = 55551               # UDP; open it in the firewall if needed
 DISCOVERY_MAGIC = "find-my-mines-v1"
 DISCOVERY_INTERVAL_S = 0.5           # how often the server announces itself
-DISCOVERY_LISTEN_S = 2.0             # how long a client listens before giving up
+DISCOVERY_LISTEN_S = 3.0             # how long a client listens before giving up
 
 # --- Game rules --------------------------------------------------------
 GRID_SIZE = 6

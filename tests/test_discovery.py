@@ -109,16 +109,24 @@ assert two.target[1] == two.servers[1]["port"]
 two.net.close()
 ok("6", "several servers: nothing is guessed, the numbered pick connects")
 
-# 7. nothing answers: fall back to the config address ---------------------
+# 7. nothing answers: stay put, then let the player type an address -------
 second.stop()
 server.stop()
 config.DISCOVERY = False
 config.DISCOVERY_LISTEN_S = 0.6
 config.SERVER_PORT = 59999
 lonely = make_auto_ui()
-wait(lambda: lonely.net.status == "failed", "fallback dial", pump=[lonely])
-assert lonely.net.address == "127.0.0.1:59999" and not lonely.found_by_scan
+wait(lambda: lonely.scan_empty and lonely.net.status == "idle", "empty scan",
+     pump=[lonely])
+assert lonely.screen_name == "nickname" and not lonely.found_by_scan
 lonely.draw()
-ok("7", "no server on the network: falls back to 127.0.0.1 and shows the usual error path")
+lonely.server_input = "127.0.0.1:59999"
+lonely._apply_server()
+wait(lambda: lonely.net.status == "failed", "manual address fails", pump=[lonely])
+wait(lambda: lonely.screen_name == "error", "error screen", pump=[lonely])
+assert lonely.error_focus
+lonely.draw()
+ok("7", "no Wi-Fi server: stays on the start screen; a failed manual address "
+       "opens the error screen with an editable address")
 
 print("ALL DISCOVERY CHECKS PASSED")
