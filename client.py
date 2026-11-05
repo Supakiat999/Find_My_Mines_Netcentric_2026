@@ -420,6 +420,9 @@ class ClientUI:
         self.server_input = saved
         self.server_focus = False
         self.server_error = ""
+        self.error_focus = True
+        self.error_replace = False
+        self.scan_empty = False
         self.auto = config.SERVER_HOST == "auto"
         self.servers = []                    # what the last scan heard
         self.target = (None if self.auto else
@@ -527,6 +530,7 @@ class ClientUI:
             self.net.close()
         self.target, self.found_by_scan = None, False
         self.servers, self._scan_done = [], False
+        self.scan_empty = False
         self.net = NetworkClient(searching=True)
         threading.Thread(target=self._scan, args=(self.net,), daemon=True).start()
 
@@ -543,10 +547,12 @@ class ClientUI:
         self._scan_done = False
         if len(self.servers) == 1:                   # exactly one: just go
             self._connect_to(self.servers[0])
-        elif not self.servers:                       # nothing heard: old default
-            self.net = NetworkClient("127.0.0.1", config.SERVER_PORT)
-            self.target = ("127.0.0.1", config.SERVER_PORT)
-            self.net.connect_async()
+        elif not self.servers:
+            # Do not guess 127.0.0.1 and bounce straight to the error screen:
+            # stay here so the player has time to type an address.
+            self.net.status = "idle"
+            self.target = None
+            self.scan_empty = True
         # several: leave the picker on screen, the player chooses
 
     def _connect_to(self, server):
@@ -577,6 +583,9 @@ class ClientUI:
             self.prefs.pop("server", None)
             save_prefs(self.prefs)
             self.server_focus = False
+            self.error_focus = False
+            self.error_replace = False
+            self.screen_name = SCREEN_NICKNAME
             self._start_search()
             return
 
@@ -601,8 +610,23 @@ class ClientUI:
         self.prefs["server"] = raw
         save_prefs(self.prefs)
         self.server_focus = False
+        self.error_focus = False
+        self.error_replace = False
+        self.scan_empty = False
+        self.screen_name = SCREEN_NICKNAME
         self.net = NetworkClient(host, port)
         self.net.connect_async()
+
+    def _show_error(self):
+        """Open the error screen with its address field ready for typing."""
+        if self.screen_name == SCREEN_ERROR:
+            return
+        self.screen_name = SCREEN_ERROR
+        self.error_focus = True
+        self.error_replace = True          # first keystroke replaces the address
+        self.server_error = ""
+        if not self.server_input and self.target is not None:
+            self.server_input = "%s:%d" % self.target
 
     # ------------------------------------------------------------------
     # small helpers
@@ -896,7 +920,7 @@ class ClientUI:
                 self.net.close()
             if now > self.reconnect_until:
                 self.reconnect_until = None
-                self.screen_name = SCREEN_ERROR
+                self._show_error()
                 return
             if now >= self.next_retry:
                 self.net = self._new_net()
@@ -919,7 +943,7 @@ class ClientUI:
         self._maintain_connection()
         if (self.net.status in ("failed", "lost") and not self.joined
                 and self.screen_name != SCREEN_ERROR):
-            self.screen_name = SCREEN_ERROR
+            self._show_error()
         while True:
             try:
                 msg = self.net.inbox.get_nowait()
@@ -1395,23 +1419,7 @@ class ClientUI:
             else:
                 self._on_game_event(event)
         elif self.screen_name == SCREEN_ERROR:
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                if self.auto:
-                    self._start_search()         # the server may have moved
-                else:
-                    self.net.close()
-                    self.net = NetworkClient()
-                    self.net.connect_async()
-                self.joined = False
-                self.reconnect_until = None
-                self.screen_name = SCREEN_NICKNAME
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_b:
-                # Back to the start screen with the address field focused, so
-                # a wrong Elastic IP can be corrected without restarting.
-                self.joined = False
-                self.reconnect_until = None
-                self.screen_name = SCREEN_NICKNAME
-                self.server_focus = True
+            self._on_error_event(event)
 
     @staticmethod
     def _nickname_fields():
@@ -1451,15 +1459,15 @@ class ClientUI:
                 self.server_error = ""
             return
 
+        if event.key == pygame.K_F5 and self.auto:
+            self._start_search()            # Wi-Fi may have changed
+            return
         if self.net.status == "searching" and self._picking():
-            # several servers heard: 1-9 picks one, F5 listens again
+            # several servers heard: 1-9 picks one
             if pygame.K_1 <= event.key <= pygame.K_9:
                 index = event.key - pygame.K_1
                 if index < len(self.servers):
                     self._connect_to(self.servers[index])
-                return
-            if event.key == pygame.K_F5:
-                self._start_search()
                 return
         if event.key == pygame.K_RETURN:
             if self.nickname.strip() and self.net.status == "connected":
@@ -1469,6 +1477,46 @@ class ClientUI:
             self.nickname = self.nickname[:-1]
         elif event.unicode and event.unicode.isprintable() and len(self.nickname) < 16:
             self.nickname += event.unicode
+
+    @staticmethod
+    def _error_field():
+        """Editable server address on the error screen."""
+        mid = WIN_W // 2
+        return pygame.Rect(mid - 280, 402, 560, 54)
+
+    def _on_error_event(self, event):
+        """Let the player fix the address right where the failure is shown."""
+        box = self._error_field()
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.error_focus = box.collidepoint(event.pos)
+            if self.error_focus:
+                self.error_replace = False
+            return
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key == pygame.K_ESCAPE:
+            self.running = False
+            return
+        if event.key == pygame.K_RETURN:
+            self.error_focus = True
+            self.error_replace = False
+            self._apply_server()
+            return
+        if event.key == pygame.K_BACKSPACE:
+            if self.error_replace:
+                self.server_input = ""
+                self.error_replace = False
+            else:
+                self.server_input = self.server_input[:-1]
+            self.server_error = ""
+            return
+        if event.unicode and event.unicode.isprintable() and len(self.server_input) < 64:
+            self.error_focus = True
+            if self.error_replace:
+                self.server_input = ""
+                self.error_replace = False
+            self.server_input += event.unicode
+            self.server_error = ""
 
     def _on_wheel(self, event):
         if self.screen_name == SCREEN_LOBBY:
@@ -2119,13 +2167,16 @@ class ClientUI:
                       center=True)
         elif self.net.status == "searching":
             self._draw_server_picker(mid)
+        elif self.scan_empty:
+            self.text("No game found on Wi-Fi - type an address (TAB), "
+                      "or press F5 to look again", (mid, 576), self.f_body,
+                      WARN, center=True)
         else:
             self.text("Connecting to the server...", (mid, 576), self.f_body,
                       WARN, center=True)
 
-        if self.net.status != "searching":
-            how = "found on Wi-Fi" if self.found_by_scan else (
-                "no game found nearby" if self.auto else "entered above")
+        if self.net.status != "searching" and not self.scan_empty:
+            how = "found on Wi-Fi" if self.found_by_scan else "entered above"
             self.text("server %s  (%s)" % (self.net.address, how),
                       (mid, 640), self.f_small, MUTED, center=True)
 
@@ -2314,27 +2365,48 @@ class ClientUI:
 
     def _draw_error(self):
         mid = WIN_W // 2
-        self._draw_bomb((mid, 190), 30, self.now, glow=0.6)
-        self.text("CAN'T REACH THE SERVER", (mid, 260), self.f_head, BAD, center=True)
+        self._draw_bomb((mid, 150), 30, self.now, glow=0.6)
+        self.text("CAN'T REACH THE SERVER", (mid, 225), self.f_head, BAD,
+                  center=True)
         if self.net.status == "lost" or self.joined:
             detail = "The connection to %s was closed." % self.net.address
         else:
             detail = "Tried %s - %s" % (self.net.address, self.net.error)
-        y = 306
+        y = 274
         for line in self.wrap(detail, self.f_body, 760)[:3]:
             self.text(line, (mid, y), self.f_body, TEXT, center=True)
             y += 24
-        y += 30
+
+        box = self._error_field()
+        self._panel(box, radius=12,
+                    border=ACCENT if self.error_focus else LINE)
+        caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else " "
+        address = self.server_input or "type the server address"
+        if self.error_focus:
+            address += caret
+        self.text(address, box.center, self.f_body,
+                  TEXT if self.server_input else MUTED, center=True)
+        self.text("SERVER ADDRESS", (box.x + 4, box.y - 22), self.f_card, MUTED)
+
+        if self.server_error:
+            self.text(self.fit(self.server_error, self.f_small, 760),
+                      (mid, box.bottom + 16), self.f_small, BAD, center=True)
+        else:
+            self.text("Type the address and press ENTER. Leave it blank and "
+                      "press ENTER to search Wi-Fi again.",
+                      (mid, box.bottom + 16), self.f_small, MUTED, center=True)
+
+        y = box.bottom + 52
         for hint in ("Is server.py running on that computer?",
-                     ("Is this computer on the same network as the server? (R searches again)"
+                     ("Is this computer on the same network as the server?"
                       if self.auto else
-                      "Is the address on the start screen the server's public IP?"),
+                      "Is the address the server's public IP or LAN IP?"),
                      "Is Python allowed through the firewall on the server?",
                      "Are both computers on the same Wi-Fi? (a phone hotspot works)"):
             self.text("- " + hint, (mid - 260, y), self.f_small, MUTED)
-            y += 30
-        self.text("Press R to try again, B to change the address",
-                  (mid, y + 24), self.f_body, ACCENT, center=True)
+            y += 26
+        self.text("Press ENTER to connect", (mid, y + 16), self.f_body, ACCENT,
+                  center=True)
 
     def _draw_game(self):
         self._draw_titlebar()

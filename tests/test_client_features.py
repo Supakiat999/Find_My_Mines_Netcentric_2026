@@ -375,9 +375,10 @@ victim.reconnect_until = time.time() - 1
 victim.pump_network()
 assert victim.screen_name == client_mod.SCREEN_ERROR
 victim.draw()
-key(victim, pygame.K_r, "r")
+key(victim, pygame.K_RETURN, "")
 assert victim.screen_name == client_mod.SCREEN_NICKNAME and not victim.joined
-ok(14, "when the seat cannot be recovered the error screen appears, and R starts over")
+ok(14, "when the seat cannot be recovered the error screen appears with an "
+       "editable address, and ENTER retries it")
 
 config.SERVER_PORT = 59999                    # nothing is listening here
 lost = client_mod.ClientUI()

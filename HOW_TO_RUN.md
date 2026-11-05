@@ -119,9 +119,9 @@ the client listens for about two seconds on start-up:
   you are in the room lobby.
 - **Several found:** a list shows each one with its room count. Press its number.
   F5 listens again.
-- **None found:** it falls back to `127.0.0.1` and shows the usual error with
-  the hints below. Some networks (campus Wi-Fi) block broadcast; use a phone
-  hotspot, or give the address by hand:
+- **None found:** it stays on the start screen and says no game was found, so
+  there is no rush to type. Some networks (campus Wi-Fi) block broadcast; use a
+  phone hotspot, or give the address by hand:
 
   ```bash
   python client.py 192.168.1.14
@@ -141,6 +141,10 @@ Start the client and press **Tab** to reach the **SERVER** field, type the
 deployment's Elastic IP (for example `54.206.67.179`), and press Enter. Then
 type a nickname and press Enter. Auto-discovery is intentionally disabled on
 AWS, so the address is required; the client remembers it for next time.
+
+If a connection fails, the error screen has a focused **SERVER ADDRESS** box.
+Type or paste the correct IP and press Enter; the first keystroke replaces the
+previous address. Leave it blank and press Enter to search Wi-Fi again.
 
 ### Step 4 — Play
 
