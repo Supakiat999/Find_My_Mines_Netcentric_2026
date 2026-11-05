@@ -12,9 +12,10 @@ two-computer setup the assignment asks for.
 | Windows | `PLAY-Windows.bat` | `HOST-Windows.bat` |
 | macOS | `PLAY-Mac.command` | `HOST-Mac.command` |
 
-The launcher checks for Python, installs pygame the first time, and asks for
-the server address - press Enter to use the one already in `config.py`. The
-host's launcher just starts the server and shows the address to hand out.
+The launcher checks for Python, installs pygame the first time, and starts the
+client. The start screen finds a server on the local network automatically; to
+play over the internet, type its address into the **SERVER** field. The host's
+launcher just starts the server and shows the address to hand out.
 
 On macOS the executable bit is often lost when a folder is zipped and mailed
 around. If double-clicking does nothing, run this once in Terminal in that
@@ -129,7 +130,17 @@ the client listens for about two seconds on start-up:
   (or set `SERVER_HOST = "192.168.1.14"` in `config.py`). Any address given this
   way skips the search.
 
-The PLAY launchers do exactly this; they no longer ask for an address.
+You can also type an address directly on the start screen: press **Tab** (or
+click the **SERVER** field), type `192.168.1.14` or `host:port`, and press
+Enter. Leave the field blank and press Enter to return to Wi-Fi auto-find. The
+last address is remembered in `client_prefs.json`.
+
+### Playing on the AWS server
+
+Start the client and press **Tab** to reach the **SERVER** field, type the
+deployment's Elastic IP (for example `54.206.67.179`), and press Enter. Then
+type a nickname and press Enter. Auto-discovery is intentionally disabled on
+AWS, so the address is required; the client remembers it for next time.
 
 ### Step 4 — Play
 

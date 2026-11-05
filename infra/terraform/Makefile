@@ -9,7 +9,7 @@ TAG           ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
 INSTALL_TORCH ?= false
 ROOT          ?= $(shell git rev-parse --show-toplevel)
 
-.PHONY: help init fmt validate plan ecr build push apply bootstrap ship logs ssh db-init destroy output
+.PHONY: help init fmt validate plan ecr build push apply bootstrap ship logs ssh db-init stop start destroy output
 
 help:
 	@echo "Find My Mines - Terraform / ECR targets"
@@ -25,6 +25,8 @@ help:
 	@echo "  make logs       Tail CloudWatch-backed container logs over SSH"
 	@echo "  make ssh        Open a shell on the host"
 	@echo "  make db-init    Re-run schema/runtime-role bootstrap only"
+	@echo "  make stop       Stop EC2 and RDS to save cost while idle"
+	@echo "  make start      Start RDS and EC2, then re-run the bootstrap"
 	@echo "  make destroy    Tear everything down"
 	@echo
 
@@ -83,6 +85,36 @@ db-init:
 	KEY="$$($(TF) output -raw ssh_key_path)"; \
 	ssh -i "$$KEY" ec2-user@"$$HOST" \
 		'cd /opt/find-my-mines && sudo docker compose --env-file .env -f compose.aws.yaml --profile init run --rm init-db'
+
+# Idle mode: keep the data, stop the compute. The Elastic IP, EBS volume and
+# RDS storage still bill (roughly USD 8/month); RDS auto-starts after 7 days.
+stop: init
+	@ID="$$($(TF) output -raw instance_id)"; \
+	DB="$$($(TF) output -raw db_instance_identifier)"; \
+	echo "Stopping EC2 $$ID and RDS $$DB..."; \
+	$(AWS) ec2 stop-instances --profile $(PROFILE) --region $(REGION) \
+		--instance-ids "$$ID" >/dev/null; \
+	$(AWS) rds stop-db-instance --profile $(PROFILE) --region $(REGION) \
+		--db-instance-identifier "$$DB" >/dev/null || \
+		echo "RDS was not stopped (already stopped or busy)."; \
+	echo "Idle. Run 'make start' before the demo."
+
+start: init
+	@ID="$$($(TF) output -raw instance_id)"; \
+	DB="$$($(TF) output -raw db_instance_identifier)"; \
+	echo "Starting RDS $$DB (this takes a few minutes)..."; \
+	$(AWS) rds start-db-instance --profile $(PROFILE) --region $(REGION) \
+		--db-instance-identifier "$$DB" >/dev/null 2>&1 || true; \
+	$(AWS) rds wait db-instance-available --profile $(PROFILE) \
+		--region $(REGION) --db-instance-identifier "$$DB"; \
+	echo "Starting EC2 $$ID..."; \
+	$(AWS) ec2 start-instances --profile $(PROFILE) --region $(REGION) \
+		--instance-ids "$$ID" >/dev/null; \
+	$(AWS) ec2 wait instance-running --profile $(PROFILE) --region $(REGION) \
+		--instance-ids "$$ID"; \
+	$(AWS) ec2 wait instance-status-ok --profile $(PROFILE) --region $(REGION) \
+		--instance-ids "$$ID"; \
+	$(MAKE) bootstrap
 
 destroy:
 	$(TF) destroy -auto-approve -input=false

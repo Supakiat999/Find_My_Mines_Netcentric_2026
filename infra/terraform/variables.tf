@@ -114,3 +114,20 @@ variable "log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget in USD. Set 0 to skip creating the budget."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.monthly_budget_usd >= 0
+    error_message = "monthly_budget_usd cannot be negative."
+  }
+}
+
+variable "budget_alert_emails" {
+  description = "Emails that receive 80% actual and 100% forecasted budget alerts."
+  type        = list(string)
+  default     = []
+}
