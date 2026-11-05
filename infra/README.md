@@ -65,6 +65,33 @@ Roughly **USD 40/month** in `ap-southeast-2` while running:
 `make destroy` removes all of it. `db_skip_final_snapshot = true` means the
 database is deleted without a snapshot — do not point this at real records.
 
+### Cost controls
+
+```bash
+make stop    # stop EC2 and RDS between demos
+make start   # start RDS, then EC2, then re-run the bootstrap
+```
+
+Stopped, the Elastic IP, the 20 GiB EBS volume and RDS storage still cost
+roughly **USD 8/month** instead of ~USD 40. RDS automatically starts again
+after seven days, so do not rely on `make stop` as a long-term archive.
+
+A monthly COST budget is created in `us-east-1` (where the Budgets API reads
+global billing data). Set the limit and alert recipients in
+`terraform.tfvars`:
+
+```hcl
+monthly_budget_usd   = 50
+budget_alert_emails  = ["you@example.com"]
+```
+
+Alerts fire at 80% actual and 100% forecasted spend, evaluated once a day.
+The budget itself is free while it has no budget actions. Spend limits are a
+project setting in **AWS Settings → Billing**; Terraform cannot set them.
+
+Also already in place: ECR keeps only the ten newest images, CloudWatch Logs
+retain 14 days, and the Free-plan RDS instance uses no automated backups.
+
 ---
 
 ## Prerequisites

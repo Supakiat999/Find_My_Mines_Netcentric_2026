@@ -52,3 +52,18 @@ output "cloudwatch_log_group" {
   description = "Container log group."
   value       = aws_cloudwatch_log_group.game.name
 }
+
+output "instance_id" {
+  description = "EC2 instance ID used by make stop/start."
+  value       = aws_instance.host.id
+}
+
+output "db_instance_identifier" {
+  description = "RDS identifier used by make stop/start."
+  value       = aws_db_instance.main.identifier
+}
+
+output "monthly_budget_usd" {
+  description = "Monthly cost budget, or 0 when the budget is disabled."
+  value       = var.monthly_budget_usd
+}

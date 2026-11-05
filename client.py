@@ -1,7 +1,8 @@
 """Find My Mines - game client.
 
-Connects to the server named in config.py (the player never types an address),
-asks for a nickname, then draws the board the server sends.
+Finds a server by itself on the local network, or connects to an address typed
+on the start screen (for the AWS deployment), asks for a nickname, then draws
+the board the server sends.
 
 The client is deliberately dumb: it sends "I clicked here" and draws whatever
 state comes back.  It never decides what is a bomb, whose turn it is, or how
@@ -259,6 +260,42 @@ def save_prefs(prefs):
         pass
 
 
+def parse_server_address(text, default_port=55550):
+    """Parse "host", "host:port" or "[ipv6]:port" from the start screen.
+
+    Returns (host, port).  Raises ValueError with a message the UI can show.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Enter an address, or leave it blank for Wi-Fi auto-find.")
+    if text.startswith("["):
+        end = text.find("]")
+        if end < 0:
+            raise ValueError("Close the IPv6 address with ].")
+        host, rest = text[1:end], text[end + 1:]
+        if rest and not rest.startswith(":"):
+            raise ValueError("Use [address]:port.")
+        port_text = rest[1:] if rest else ""
+    else:
+        if text.count(":") > 1:
+            raise ValueError("Use host:port; put IPv6 addresses in brackets.")
+        host, sep, port_text = text.partition(":")
+        if not sep:
+            port_text = ""
+    host = host.strip()
+    if not host or any(ch.isspace() for ch in host):
+        raise ValueError("That does not look like a server address.")
+    if port_text:
+        if not port_text.isdigit():
+            raise ValueError("The port must be a number.")
+        port = int(port_text)
+    else:
+        port = default_port
+    if not 1 <= port <= 65535:
+        raise ValueError("The port must be between 1 and 65535.")
+    return host, port
+
+
 def flatten_board(board, dims):
     """Nested board lists -> {slot: value}."""
     cells = {}
@@ -362,18 +399,38 @@ class ClientUI:
         self.sound = SoundBank(muted=bool(self.prefs.get("muted", False)))
         self.fx_on = bool(self.prefs.get("animations", True))
 
-        # Auto mode: find the server on the network instead of reading an
-        # address.  Any explicit SERVER_HOST (config or command line) skips it.
+        # Server choice: a remembered address from the start screen wins over
+        # "auto", so an internet server is one Enter away on the next launch.
+        # An address from config.py or the command line overrides it.
+        saved = self.prefs.get("server")
+        if not isinstance(saved, str):
+            saved = ""
+        if config.SERVER_HOST != "auto":
+            saved = config.SERVER_HOST
+            if config.SERVER_PORT != 55550:
+                saved += ":%d" % config.SERVER_PORT
+        elif saved:
+            try:
+                host, port = parse_server_address(saved, config.SERVER_PORT)
+            except ValueError:
+                saved = ""
+            else:
+                config.SERVER_HOST, config.SERVER_PORT = host, port
+
+        self.server_input = saved
+        self.server_focus = False
+        self.server_error = ""
         self.auto = config.SERVER_HOST == "auto"
         self.servers = []                    # what the last scan heard
-        self.target = None                   # (host, port) chosen by discovery
+        self.target = (None if self.auto else
+                       (config.SERVER_HOST, config.SERVER_PORT))
         self.found_by_scan = False
         self._scan_done = False
         self.net = None
         if self.auto:
             self._start_search()
         else:
-            self.net = NetworkClient()
+            self.net = NetworkClient(*self.target)
             self.net.connect_async()
 
         self.screen_name = SCREEN_NICKNAME
@@ -496,6 +553,55 @@ class ClientUI:
         self.target = (server["host"], server["port"])
         self.found_by_scan = True
         self.net = NetworkClient(*self.target)
+        self.net.connect_async()
+
+    def _apply_server(self):
+        """Use the address on the start screen, or go back to Wi-Fi auto-find.
+
+        The choice is remembered in client_prefs.json.  This only opens the
+        TCP connection; the player still presses Enter on the nickname to join.
+        """
+        raw = (self.server_input or "").strip()
+        if not raw:
+            if self.net is not None:
+                self.net.close()
+            config.SERVER_HOST = "auto"
+            self.auto = True
+            self.server_input = ""
+            self.server_error = ""
+            self.target = None
+            self.found_by_scan = False
+            self.token = None
+            self.joined = False
+            self.reconnect_until = None
+            self.prefs.pop("server", None)
+            save_prefs(self.prefs)
+            self.server_focus = False
+            self._start_search()
+            return
+
+        try:
+            host, port = parse_server_address(raw, config.SERVER_PORT)
+        except ValueError as exc:
+            self.server_error = str(exc)
+            return
+
+        if self.net is not None:
+            self.net.close()
+        config.SERVER_HOST, config.SERVER_PORT = host, port
+        self.auto = False
+        self.server_input = raw
+        self.server_error = ""
+        self.target = (host, port)
+        self.found_by_scan = False
+        self._scan_done = False
+        self.token = None
+        self.joined = False
+        self.reconnect_until = None
+        self.prefs["server"] = raw
+        save_prefs(self.prefs)
+        self.server_focus = False
+        self.net = NetworkClient(host, port)
         self.net.connect_async()
 
     # ------------------------------------------------------------------
@@ -1299,10 +1405,52 @@ class ClientUI:
                 self.joined = False
                 self.reconnect_until = None
                 self.screen_name = SCREEN_NICKNAME
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_b:
+                # Back to the start screen with the address field focused, so
+                # a wrong Elastic IP can be corrected without restarting.
+                self.joined = False
+                self.reconnect_until = None
+                self.screen_name = SCREEN_NICKNAME
+                self.server_focus = True
+
+    @staticmethod
+    def _nickname_fields():
+        """Nickname and server boxes on the start screen."""
+        mid = WIN_W // 2
+        return (pygame.Rect(mid - 220, 378, 440, 60),
+                pygame.Rect(mid - 220, 466, 440, 46))
 
     def _on_nickname_event(self, event):
+        nick_box, server_box = self._nickname_fields()
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if server_box.collidepoint(event.pos):
+                self.server_focus = True
+                self.server_error = ""
+            elif nick_box.collidepoint(event.pos):
+                self.server_focus = False
+            return
         if event.type != pygame.KEYDOWN:
             return
+        if event.key == pygame.K_TAB:
+            self.server_focus = not self.server_focus
+            self.server_error = ""
+            return
+        if event.key == pygame.K_ESCAPE:
+            self.running = False
+            return
+
+        if self.server_focus:
+            if event.key == pygame.K_RETURN:
+                self._apply_server()
+            elif event.key == pygame.K_BACKSPACE:
+                self.server_input = self.server_input[:-1]
+                self.server_error = ""
+            elif (event.unicode and event.unicode.isprintable()
+                  and len(self.server_input) < 64):
+                self.server_input += event.unicode
+                self.server_error = ""
+            return
+
         if self.net.status == "searching" and self._picking():
             # several servers heard: 1-9 picks one, F5 listens again
             if pygame.K_1 <= event.key <= pygame.K_9:
@@ -1319,8 +1467,6 @@ class ClientUI:
                 self.net.send(protocol.JOIN, nickname=self.nickname)
         elif event.key == pygame.K_BACKSPACE:
             self.nickname = self.nickname[:-1]
-        elif event.key == pygame.K_ESCAPE:
-            self.running = False
         elif event.unicode and event.unicode.isprintable() and len(self.nickname) < 16:
             self.nickname += event.unicode
 
@@ -1930,22 +2076,42 @@ class ClientUI:
         self.text("A two-player bomb hunt", (mid, 318), self.f_body, MUTED,
                   center=True)
 
-        box = pygame.Rect(mid - 220, 378, 440, 60)
-        self._panel(box, radius=12)
-        self.gx.rect(self.screen, ACCENT, box, width=2, border_radius=12)
+        nick_box, server_box = self._nickname_fields()
         caret = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else " "
+        self._panel(nick_box, radius=12,
+                    border=ACCENT if not self.server_focus else LINE)
         if self.nickname:
-            self.text(self.nickname + caret, box.center, self.f_head, TEXT,
+            self.text(self.nickname + caret, nick_box.center, self.f_head, TEXT,
                       center=True)
         else:
-            self.text("Type a nickname" + caret, box.center, self.f_head, MUTED,
-                      center=True)
-        self.text("YOUR NICKNAME", (box.x + 4, box.y - 22), self.f_card, MUTED)
+            self.text("Type a nickname" + caret, nick_box.center, self.f_head,
+                      MUTED, center=True)
+        self.text("YOUR NICKNAME", (nick_box.x + 4, nick_box.y - 22),
+                  self.f_card, MUTED)
 
-        self.text("Create or join a room after choosing your nickname",
-                  (mid, 490), self.f_small, MUTED, center=True)
+        self._panel(server_box, radius=10,
+                    border=ACCENT if self.server_focus else LINE)
+        server_text = self.server_input or "Auto - find on Wi-Fi"
+        if self.server_focus:
+            server_text += caret
+        self.text(server_text, server_box.center, self.f_body,
+                  TEXT if self.server_input else MUTED, center=True)
+        self.text("SERVER  (TAB to switch)", (server_box.x + 4,
+                                              server_box.y - 22),
+                  self.f_card, MUTED)
 
-        if self.net.status == "connected":
+        if self.server_error:
+            self.text(self.fit(self.server_error, self.f_small, 760),
+                      (mid, 526), self.f_small, BAD, center=True)
+        else:
+            self.text(self.fit("Leave blank for Wi-Fi auto-find, or type an "
+                               "IP (e.g. 54.206.67.179)", self.f_small, 760),
+                      (mid, 526), self.f_small, MUTED, center=True)
+
+        if self.server_focus:
+            self.text("Press ENTER to use this server", (mid, 576),
+                      self.f_body, ACCENT, center=True)
+        elif self.net.status == "connected":
             ready = bool(self.nickname.strip())
             self.text("Press ENTER to continue" if ready
                       else "Pick a nickname to start",
@@ -1958,8 +2124,8 @@ class ClientUI:
                       WARN, center=True)
 
         if self.net.status != "searching":
-            how = "found automatically" if self.found_by_scan else (
-                "set in config.py" if not self.auto else "no game found nearby")
+            how = "found on Wi-Fi" if self.found_by_scan else (
+                "no game found nearby" if self.auto else "entered above")
             self.text("server %s  (%s)" % (self.net.address, how),
                       (mid, 640), self.f_small, MUTED, center=True)
 
@@ -2162,13 +2328,13 @@ class ClientUI:
         for hint in ("Is server.py running on that computer?",
                      ("Is this computer on the same network as the server? (R searches again)"
                       if self.auto else
-                      "Is SERVER_HOST in config.py the server's current IP?"),
+                      "Is the address on the start screen the server's public IP?"),
                      "Is Python allowed through the firewall on the server?",
                      "Are both computers on the same Wi-Fi? (a phone hotspot works)"):
             self.text("- " + hint, (mid - 260, y), self.f_small, MUTED)
             y += 30
-        self.text("Press R to try again", (mid, y + 24), self.f_body, ACCENT,
-                  center=True)
+        self.text("Press R to try again, B to change the address",
+                  (mid, y + 24), self.f_body, ACCENT, center=True)
 
     def _draw_game(self):
         self._draw_titlebar()
@@ -3146,9 +3312,9 @@ class ClientUI:
 def main():
     """Start the client.
 
-    Normally nobody types an address: the client finds the server on the
-    network by itself (SERVER_HOST = "auto" in config.py).  An optional
-    argument skips that and dials a specific machine:
+    With no argument the start screen finds a server on the local network,
+    or accepts an address typed there (for example the AWS Elastic IP).  An
+    optional argument skips the field and dials a specific machine:
     python client.py 192.168.1.14 [port]
     """
     args = [a for a in sys.argv[1:] if a.strip()]

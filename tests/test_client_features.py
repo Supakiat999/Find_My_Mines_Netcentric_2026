@@ -449,4 +449,17 @@ config.PREFS_FILE = None
 client_mod.apply_theme("dark")
 ok(18, "theme and mute are remembered between runs; a damaged file is ignored")
 
+for text, expected in (("54.206.67.179", ("54.206.67.179", 55550)),
+                       ("host:6000", ("host", 6000)),
+                       ("[::1]:55550", ("::1", 55550))):
+    assert client_mod.parse_server_address(text) == expected
+for bad in ("", "host:abc", "host:70000", "a:b:c"):
+    try:
+        client_mod.parse_server_address(bad)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted malformed address %r" % bad)
+ok(19, "the start-screen SERVER field accepts host[:port] and rejects bad input")
+
 print("\nALL CLIENT-FEATURE CHECKS PASSED")

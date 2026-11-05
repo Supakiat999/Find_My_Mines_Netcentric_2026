@@ -1,8 +1,9 @@
 """Shared configuration for Find My Mines.
 
-The client never asks the user for an address or port: it reads them from
-here.  When you run the client on a second computer, the only line you need
-to change is SERVER_HOST.
+SERVER_HOST is the default target for the client.  "auto" finds a server on
+the local network; the start screen can also accept an address (for example
+the Elastic IP of the AWS deployment), which is remembered in
+client_prefs.json.  `python client.py <host> [port]` overrides both.
 """
 
 import os
