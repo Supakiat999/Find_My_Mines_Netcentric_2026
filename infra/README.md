@@ -52,7 +52,7 @@ The database schema and the restricted `runtime` role are created by
 
 ### Costs
 
-Roughly **USD 40/month** in `ap-southeast-1` while running:
+Roughly **USD 40/month** in `ap-southeast-2` while running:
 
 | Item | Approx. |
 |---|---|
@@ -95,10 +95,14 @@ cp terraform.tfvars.example terraform.tfvars
 Edit `terraform.tfvars`:
 
 ```hcl
-aws_region  = "ap-southeast-1"
+aws_region  = "ap-southeast-2"
 aws_profile = "agent-toolkit"
 ssh_cidrs   = ["203.0.113.10/32"]   # curl -s https://checkip.amazonaws.com
 ```
+
+On a Free plan project, RDS rejects the default seven-day backup retention.
+Set `db_backup_retention_days = 0` for the demo; on a Paid plan use `7` (or
+more) so the database has automated backups.
 
 `terraform.tfvars` and all `.tfstate` files are git-ignored. Local state contains
 the generated runtime password; use an encrypted remote backend if the state is
@@ -110,6 +114,17 @@ the shell first:
 ```bash
 eval "$(aws configure export-credentials --profile agent-toolkit --format env)"
 ```
+
+Exported credentials expire quickly, which can interrupt a 10-15 minute apply.
+A `credential_process` profile keeps them fresh:
+
+```ini
+[profile fmm-agent]
+region = ap-southeast-2
+credential_process = aws configure export-credentials --profile agent-toolkit --format process
+```
+
+Then set `aws_profile = "fmm-agent"` in `terraform.tfvars`.
 
 ---
 

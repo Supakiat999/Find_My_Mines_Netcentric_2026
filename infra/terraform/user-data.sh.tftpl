@@ -17,12 +17,14 @@ done
 
 REGION="${aws_region}"
 
-dnf install -y docker jq curl
+# Amazon Linux 2023 ships curl-minimal, which conflicts with the `curl`
+# package. The curl binary is already present, so do not install it here.
+dnf install -y docker jq
 systemctl enable --now docker
 usermod -aG docker ec2-user || true
 
 if ! command -v aws >/dev/null 2>&1; then
-  dnf install -y awscli-2 >/dev/null 2>&1 || dnf install -y awscli
+  dnf install -y awscli-2
 fi
 
 COMPOSE_VERSION="v2.39.2"
