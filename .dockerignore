@@ -1,0 +1,21 @@
+# never bake credentials, local state, or host artefacts into the image
+.git
+.github
+.cursor
+.env
+.env.*
+!.env.example
+.venv
+__pycache__
+*.py[cod]
+*.backup.json
+*.export.json
+*.backup.sql
+stats.json
+client_prefs.json
+.DS_Store
+
+# not needed at runtime
+infra
+tests
+*.md

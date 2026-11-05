@@ -98,7 +98,7 @@ class Server:
         self.listener.bind((config.BIND_HOST, config.SERVER_PORT))
         self.listener.listen(8)
         self.listener.settimeout(0.5)     # so the accept loop can be stopped
-        self.lan_ip = protocol.local_ip()
+        self.lan_ip = config.ADVERTISE_HOST or protocol.local_ip()
         self._ip_checked_at = 0.0
         self._offline = False
         self._beacon = None
@@ -111,6 +111,8 @@ class Server:
         Wi-Fi, or a hotspot restarting.  Showing the address we had at
         start-up would send players to somewhere that no longer exists.
         """
+        if config.ADVERTISE_HOST:
+            return config.ADVERTISE_HOST
         now = time.time()
         if now - self._ip_checked_at > 3:
             self._ip_checked_at = now

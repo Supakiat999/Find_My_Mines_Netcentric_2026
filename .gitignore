@@ -11,3 +11,12 @@ client_prefs.json
 *.backup.json
 *.export.json
 *.backup.sql
+
+# terraform - keep the dependency lock file, ignore state and local values
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+*.tfvars
+!*.tfvars.example

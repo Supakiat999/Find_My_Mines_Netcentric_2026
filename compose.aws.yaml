@@ -1,0 +1,46 @@
+# Runtime compose file used on the EC2 host. PostgreSQL is RDS, so only the
+# game container and a one-shot schema/role bootstrap are defined here.
+#
+# Terraform writes .env and .env.init beside this file (mode 0600) and runs:
+#   docker compose --env-file .env -f compose.aws.yaml pull game
+#   docker compose --env-file .env -f compose.aws.yaml --profile init run --rm init-db
+#   docker compose --env-file .env -f compose.aws.yaml up -d game
+
+services:
+  game:
+    image: ${IMAGE_URI}
+    restart: unless-stopped
+    ports:
+      - "55550:55550"
+    env_file:
+      - .env
+    environment:
+      DISCOVERY: "false"
+      STATS_FILE: /tmp/stats.json
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${LOG_GROUP}
+        awslogs-stream: game
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python server.py' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  init-db:
+    image: ${IMAGE_URI}
+    profiles: ["init"]
+    env_file:
+      - .env.init
+    command: ["python", "tools/init_db.py"]
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${LOG_GROUP}
+        awslogs-stream: init-db

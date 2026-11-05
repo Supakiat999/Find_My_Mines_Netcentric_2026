@@ -275,6 +275,11 @@ pip install -r requirements.txt
 python server.py
 ```
 
+The server can also run in Docker, and the same image is deployed to AWS by the
+Terraform scaffold in [`infra/`](infra/README.md). Use
+`docker compose --profile game up -d --build --wait` for the full local stack,
+or follow the EC2 + RDS runbook in [infra/README.md](infra/README.md).
+
 Python loads the project-root `.env` automatically using `python-dotenv`, including
 `${RUNTIME_PASSWORD}` expansion. Existing environment variables take precedence.
 This works from any working directory and also applies to seed and migration scripts.
